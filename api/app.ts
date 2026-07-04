@@ -1,6 +1,16 @@
 import express from "express";
 import dotenv from "dotenv";
 import { GoogleGenAI, Type } from "@google/genai";
+import { devLog, getDevLogDir, isDevLoggingEnabled, readRecentDevLogs } from "./devLogger.js";
+import {
+  CURSOR_PROXY_DEFAULT_BASE_URL,
+  CURSOR_PROXY_DEFAULT_MODEL,
+  buildOpenAIMessages,
+  fetchCursorProxyHealth,
+  fetchCursorProxyModels,
+  sanitizeCursorModelId,
+  streamCursorProxyChat,
+} from "./cursorProxyClient.js";
 
 // Load environment variables (.env.local first, then .env)
 dotenv.config({ path: ".env.local" });
@@ -13,21 +23,90 @@ const PORT = 3000;
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 
+if (isDevLoggingEnabled()) {
+  app.use((req, _res, next) => {
+    if (req.path.startsWith("/api/") && req.path !== "/api/dev/log") {
+      devLog("http", `${req.method} ${req.path}`, {
+        query: req.query,
+        bodyKeys: req.body && typeof req.body === "object" ? Object.keys(req.body) : [],
+      });
+    }
+    next();
+  });
+}
+
+app.post("/api/dev/log", (req, res) => {
+  if (!isDevLoggingEnabled()) {
+    return res.status(404).json({ error: "Dev logging disabled" });
+  }
+  const { category, message, data, level } = req.body || {};
+  if (!category || !message) {
+    return res.status(400).json({ error: "category and message required" });
+  }
+  devLog(String(category), String(message), data, level || "info");
+  res.json({ ok: true });
+});
+
+app.get("/api/dev/logs", (_req, res) => {
+  if (!isDevLoggingEnabled()) {
+    return res.status(404).json({ error: "Dev logging disabled" });
+  }
+  const limit = Math.min(Number(_req.query.limit) || 80, 500);
+  res.json({
+    logDir: getDevLogDir(),
+    entries: readRecentDevLogs(limit),
+  });
+});
+
 // Global dynamic settings stored in-memory
 let globalSettings = {
-  geminiApiKey: process.env.GEMINI_API_KEY || "",
+  geminiApiKey: "",
   routingEnabled: true,
   selectedModelId: "gemma-4-31b",
-  adminPassword: "admin", // Default password to access config
+  adminPassword: process.env.BUILDME_ADMIN_PASSWORD || "admin",
+  activeProvider: (process.env.BUILDME_LLM_PROVIDER as "gemini" | "cursor-proxy") || "gemini",
+  cursorProxyBaseUrl: CURSOR_PROXY_DEFAULT_BASE_URL,
+  cursorProxyApiKey: "",
+  cursorSelectedModelId: CURSOR_PROXY_DEFAULT_MODEL,
 };
+
+function getCursorProxyApiKey(): string {
+  const fromMemory = globalSettings.cursorProxyApiKey?.trim();
+  if (fromMemory) return fromMemory;
+  const fromEnv = process.env.CURSOR_PROXY_API_KEY?.trim();
+  if (fromEnv) {
+    globalSettings.cursorProxyApiKey = fromEnv;
+    return fromEnv;
+  }
+  return "";
+}
+
+function getGeminiApiKey(): string {
+  const fromMemory = globalSettings.geminiApiKey?.trim();
+  if (fromMemory) return fromMemory;
+  const fromEnv = process.env.GEMINI_API_KEY?.trim();
+  if (fromEnv) {
+    globalSettings.geminiApiKey = fromEnv;
+    return fromEnv;
+  }
+  return "";
+}
+
+function isValidAdminPassword(password: unknown): boolean {
+  const input = String(password ?? "").trim();
+  const expected = String(globalSettings.adminPassword ?? "admin").trim();
+  return input.length > 0 && input === expected;
+}
 
 // Lazy-initialized Gemini Client
 let aiClient: GoogleGenAI | null = null;
 
 function getAiClient(): GoogleGenAI {
-  const key = globalSettings.geminiApiKey || process.env.GEMINI_API_KEY;
+  const key = getGeminiApiKey();
   if (!key) {
-    throw new Error("GEMINI_API_KEY? ??????? ???????? ??? ??? ?????? ?????????");
+    throw new Error(
+      "GEMINI_API_KEY가 설정되지 않았습니다. .env.local 또는 관리자 설정에서 API 키를 등록해 주세요."
+    );
   }
   if (!aiClient) {
     aiClient = new GoogleGenAI({ apiKey: key });
@@ -75,9 +154,31 @@ function resolveApiModelId(uiModelId: string): string {
 
 function buildFallbackChain(primary: string, isRouting: boolean): string[] {
   if (!isRouting) return [primary];
-  if (primary === "gemma-4-31b") return ["gemma-4-31b", "gemma-4-26b"];
-  if (primary === "gemma-4-26b") return ["gemma-4-26b", "gemma-4-31b"];
-  return [primary];
+  const gemma =
+    primary === "gemma-4-31b"
+      ? ["gemma-4-31b", "gemma-4-26b"]
+      : primary === "gemma-4-26b"
+        ? ["gemma-4-26b", "gemma-4-31b"]
+        : [primary];
+  const extras = ["gemini-2.5-flash"];
+  return [...gemma, ...extras.filter((m) => !gemma.includes(m))];
+}
+
+const MODEL_ATTEMPT_TIMEOUT_MS = 120_000;
+
+async function withModelTimeout<T>(promise: Promise<T>, modelLabel: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`모델 ${modelLabel} 응답 시간 초과 (${MODEL_ATTEMPT_TIMEOUT_MS / 1000}초)`)),
+      MODEL_ATTEMPT_TIMEOUT_MS
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 /** 세션에 쌓인 대화만 추출 (시스템 알림 제외) */
@@ -224,56 +325,148 @@ app.get("/api/models", async (req, res) => {
   }
 });
 
+app.get("/api/cursor-proxy/health", async (_req, res) => {
+  try {
+    const apiKey = getCursorProxyApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: "Cursor Proxy API 키가 설정되지 않았습니다." });
+    }
+    const health = await fetchCursorProxyHealth(globalSettings.cursorProxyBaseUrl, apiKey);
+    res.json({ ok: true, health, model: sanitizeCursorModelId(globalSettings.cursorSelectedModelId) });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Cursor Proxy health check failed" });
+  }
+});
+
+app.get("/api/cursor-proxy/models", async (_req, res) => {
+  try {
+    const apiKey = getCursorProxyApiKey();
+    if (!apiKey) {
+      return res.status(400).json({ error: "Cursor Proxy API 키가 설정되지 않았습니다." });
+    }
+    const models = await fetchCursorProxyModels(globalSettings.cursorProxyBaseUrl, apiKey);
+    res.json({ models });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch Cursor Proxy models" });
+  }
+});
+
 // Admin settings APIs
 app.get("/api/admin/settings", (req, res) => {
-  const key = globalSettings.geminiApiKey || process.env.GEMINI_API_KEY || "";
-  const maskedKey = key 
-    ? (key.length > 10 ? (key.substring(0, 6) + "..." + key.substring(key.length - 4)) : "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022")
+  const key = getGeminiApiKey();
+  const maskedKey = key
+    ? key.length > 10
+      ? key.substring(0, 6) + "..." + key.substring(key.length - 4)
+      : "••••••••"
+    : "";
+  const cursorKey = getCursorProxyApiKey();
+  const maskedCursorKey = cursorKey
+    ? cursorKey.length > 10
+      ? cursorKey.substring(0, 6) + "..." + cursorKey.substring(cursorKey.length - 4)
+      : "••••••••"
     : "";
   res.json({
     routingEnabled: globalSettings.routingEnabled,
     selectedModelId: globalSettings.selectedModelId,
     hasApiKey: !!key,
     maskedApiKey: maskedKey,
+    activeProvider: globalSettings.activeProvider,
+    cursorProxy: {
+      baseUrl: globalSettings.cursorProxyBaseUrl,
+      selectedModelId: sanitizeCursorModelId(globalSettings.cursorSelectedModelId),
+      hasApiKey: !!cursorKey,
+      maskedApiKey: maskedCursorKey,
+    },
   });
 });
 
 app.post("/api/admin/settings", (req, res) => {
-  const { password, geminiApiKey, routingEnabled, selectedModelId } = req.body;
-  
-  if (password !== globalSettings.adminPassword) {
-    return res.status(401).json({ error: "?????? ?????? ??????." });
+  const {
+    password,
+    geminiApiKey,
+    routingEnabled,
+    selectedModelId,
+    activeProvider,
+    cursorProxyBaseUrl,
+    cursorProxyApiKey,
+    cursorSelectedModelId,
+  } = req.body;
+
+  if (!isValidAdminPassword(password)) {
+    return res.status(401).json({ error: "비밀번호가 올바르지 않습니다." });
   }
-  
+
   if (geminiApiKey !== undefined && geminiApiKey !== "") {
-    // Check if it's actually updated (not our masked key placeholder)
-    if (!geminiApiKey.includes("...")) {
-      globalSettings.geminiApiKey = geminiApiKey;
-      aiClient = null; // force re-initialization with new key
+    const nextKey = String(geminiApiKey).trim();
+    if (!nextKey.includes("...")) {
+      globalSettings.geminiApiKey = nextKey;
+      aiClient = null;
     }
   }
-  
+
   if (routingEnabled !== undefined) {
     globalSettings.routingEnabled = routingEnabled;
   }
-  
+
   if (selectedModelId !== undefined) {
     globalSettings.selectedModelId = selectedModelId;
   }
-  
-  res.json({ success: true, message: "??????????????????????? ?? ???????????????????" });
+
+  if (activeProvider === "gemini" || activeProvider === "cursor-proxy") {
+    globalSettings.activeProvider = activeProvider;
+  }
+
+  if (cursorProxyBaseUrl !== undefined && String(cursorProxyBaseUrl).trim()) {
+    globalSettings.cursorProxyBaseUrl = String(cursorProxyBaseUrl).trim();
+  }
+
+  if (cursorProxyApiKey !== undefined && cursorProxyApiKey !== "") {
+    const nextKey = String(cursorProxyApiKey).trim();
+    if (!nextKey.includes("...")) {
+      globalSettings.cursorProxyApiKey = nextKey;
+    }
+  }
+
+  if (cursorSelectedModelId !== undefined) {
+    globalSettings.cursorSelectedModelId = sanitizeCursorModelId(String(cursorSelectedModelId));
+  }
+
+  res.json({ success: true, message: "설정이 저장되었습니다." });
 });
 
 // Chat brainstorming endpoint
 app.post("/api/chat", async (req, res) => {
+  const chatStartedAt = Date.now();
+  let chatSessionId = "";
+  let chatUserPreview = "";
+
   try {
-    const { sessionState, userMessage, selectedModelId, routingEnabled } = req.body;
+    const { sessionState, userMessage, selectedModelId, routingEnabled, llmProvider, cursorSelectedModelId } =
+      req.body;
     
     if (!sessionState) {
       return res.status(400).json({ error: "sessionState is required" });
     }
 
-    const ai = getAiClient();
+    chatSessionId = sessionState.id || "unknown";
+    chatUserPreview = String(userMessage || "").slice(0, 200);
+
+    devLog("chat.request", "Chat round started", {
+      sessionId: chatSessionId,
+      status: sessionState.status,
+      userMessage: chatUserPreview,
+      selectedModelId: selectedModelId || globalSettings.selectedModelId,
+      routingEnabled: routingEnabled ?? globalSettings.routingEnabled,
+      llmProvider: llmProvider || globalSettings.activeProvider,
+      historyLength: sessionState.history?.length ?? 0,
+      tocLength: sessionState.toc?.length ?? 0,
+      currentSectionId: sessionState.currentSectionId,
+    });
+
+    const resolvedProvider =
+      llmProvider === "cursor-proxy" || llmProvider === "gemini"
+        ? llmProvider
+        : globalSettings.activeProvider;
 
     // Prepare system instructions for BuildMe agent
     const systemInstruction = `
@@ -284,7 +477,10 @@ app.post("/api/chat", async (req, res) => {
 
 1단계: 심층 브레인스토밍 & 인터뷰 - sessionStatus: 'interviewing'
 - 사용자에게 날카로운 질문을 던져 요구사항·타깃·차별점을 파악합니다.
-- 충분한 정보가 모이면 목차(TOC) 초안을 suggestedToc로 제안합니다.
+- 인터뷰 질문은 reply에만 쓰고, suggestedToc에는 절대 넣지 마세요. "목적은 무엇인가요?", "타깃은 누구인가요?" 같은 질문 문장은 목차가 아닙니다.
+- sessionStatus가 'interviewing'일 때는 suggestedToc 필드를 보내지 마세요 (빈 배열도 금지). 질문을 번호 매겨 reply에만 작성하세요.
+- 사용자가 "목차", "레시피", "간단히 md만", "바로 집필", "복잡한 거 빼고" 등 문서 구조를 요청할 때만 문서 목차(예: 개요·준비물·조리법·꿀팁)를 suggestedToc로 제안하고 sessionStatus를 writing으로 전환하세요.
+- 충분한 정보가 모이면 문서 구조 목차(TOC) 초안을 suggestedToc로 제안합니다.
 
 2단계: 목차(TOC) 제안 & 확정 - sessionStatus: 'writing'으로 전환
 - reply에서 목차를 말로만 제안하지 마세요. 반드시 suggestedToc JSON 배열에 동일한 목차를 넣으세요.
@@ -305,6 +501,7 @@ app.post("/api/chat", async (req, res) => {
 - reply: 대화창용. 초안 작성 이유·구성 의도·핵심 포인트 설명, 사용자 피드백 수용/반박, 수정 사항 요약, 추가 질문을 여기에 작성합니다.
 - critique: 맥킨지 스타일 비평. reply에 요약을 넣고, critique에 상세 비평을 작성합니다. 둘 다 대화창에만 표시됩니다.
 - 집필 중 suggestedToc는 보내지 마세요.
+- suggestedToc의 title에는 짧은 목차 제목만 넣으세요 (예: "1.2 기대 결과"). reply·초안 설명·대화 문장을 title에 넣지 마세요.
 
 - [초안 작성] updatedContent에 본문만, reply/critique에 설명·비평
 - [피드백 반영] updatedContent 본문 수정, reply에 무엇을 바꿨는지·왜 그렇게 했는지·동의하지 않는 부분 반박
@@ -312,6 +509,7 @@ app.post("/api/chat", async (req, res) => {
 
 [TOC 지속 검토]
 - 대화마다 목차 중복·누락을 점검하고, 수정 시에만 suggestedToc를 전체 목록으로 보냅니다.
+- 목차를 재구성할 때는 기존 목차와 병합하지 말고 suggestedToc에 새 전체 목록을 보내세요.
 
 [대목차 검토] 사용자 메시지가 [대목차 검토]로 시작하면:
 - 첨부된 확정 본문(해당 대목차만)을 읽고 중복·누락·흐름·모순·용어 일관성을 검토합니다.
@@ -368,6 +566,97 @@ app.post("/api/chat", async (req, res) => {
       });
     }
 
+    if (resolvedProvider === "cursor-proxy" && !getCursorProxyApiKey()) {
+      return res.status(400).json({ error: "Cursor Proxy API 키가 설정되지 않았습니다." });
+    }
+
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    res.setHeader("X-Accel-Buffering", "no");
+
+    const writeStatus = (payload: Record<string, unknown>) => {
+      res.write(JSON.stringify({ type: "status", ...payload }) + "\n");
+    };
+
+    if (resolvedProvider === "cursor-proxy") {
+      const cursorKey = getCursorProxyApiKey()!;
+      const cursorModel = sanitizeCursorModelId(
+        cursorSelectedModelId || globalSettings.cursorSelectedModelId
+      );
+      const cursorBase = globalSettings.cursorProxyBaseUrl;
+
+      writeStatus({
+        phase: "model_attempt",
+        model: cursorModel,
+        attempt: 1,
+        total: 1,
+        fallback: false,
+        provider: "cursor-proxy",
+      });
+
+      const openAIMessages = buildOpenAIMessages(systemInstruction, contents);
+
+      try {
+        const result = await streamCursorProxyChat({
+          baseUrl: cursorBase,
+          apiKey: cursorKey,
+          model: cursorModel,
+          messages: openAIMessages,
+          onChunk: (text) => {
+            res.write(JSON.stringify({ type: "chunk", text }) + "\n");
+          },
+        });
+
+        writeStatus({ phase: "streaming", model: result.modelUsed, provider: "cursor-proxy" });
+
+        res.write(
+          JSON.stringify({
+            type: "metadata",
+            modelUsed: `cursor:${result.modelUsed}`,
+            apiModelId: result.modelUsed,
+            fallbackOccurred: false,
+            contextTokens: result.promptTokens,
+            contextLimit: 128000,
+            outputTokens: result.completionTokens,
+            outputTokenLimit: 32768,
+            provider: "cursor-proxy",
+          }) + "\n"
+        );
+
+        devLog("chat.response", "Cursor Proxy stream completed", {
+          sessionId: chatSessionId,
+          durationMs: Date.now() - chatStartedAt,
+          modelUsed: result.modelUsed,
+          responseChars: result.fullText.length,
+        });
+
+        res.end();
+        return;
+      } catch (cursorErr: any) {
+        devLog(
+          "chat.error",
+          "Cursor Proxy chat failed",
+          { error: cursorErr?.message, sessionId: chatSessionId },
+          "error"
+        );
+        if (res.headersSent) {
+          res.write(
+            JSON.stringify({
+              type: "error",
+              message: cursorErr?.message || "Cursor Proxy error",
+            }) + "\n"
+          );
+          res.end();
+        } else {
+          res.status(500).json({ error: cursorErr?.message || "Cursor Proxy error" });
+        }
+        return;
+      }
+    }
+
+    const ai = getAiClient();
+
     const getFullErrorMessage = (err: any): string => {
       if (!err) return "Unknown error";
       let msg = err.message || err.toString();
@@ -387,13 +676,23 @@ app.post("/api/chat", async (req, res) => {
     const fallbackChain = buildFallbackChain(primaryModel, isRouting);
 
     let responseStream: any = null;
-    let actualModelUsed = '';
+    let actualModelUsed = "";
     let actualApiModelUsed = resolveApiModelId(primaryModel);
     let modelInputTokenLimit = 1048576;
     let modelOutputTokenLimit = 32768;
     let lastError: any = null;
+    let triedModels: string[] = [];
 
     for (const model of fallbackChain) {
+      triedModels.push(model);
+      writeStatus({
+        phase: "model_attempt",
+        model,
+        attempt: triedModels.length,
+        total: fallbackChain.length,
+        fallback: triedModels.length > 1,
+      });
+
       try {
         actualModelUsed = model;
         const actualApiModel = resolveApiModelId(model);
@@ -496,11 +795,14 @@ app.post("/api/chat", async (req, res) => {
           console.warn(`models.get failed for ${actualApiModel}:`, modelInfoErr);
         }
 
-        responseStream = await ai.models.generateContentStream({
-          model: actualApiModel,
-          contents: modelContents,
-          config: config
-        });
+        responseStream = await withModelTimeout(
+          ai.models.generateContentStream({
+            model: actualApiModel,
+            contents: modelContents,
+            config: config,
+          }),
+          actualApiModel
+        );
 
         // Break if stream acquisition succeeds
         if (responseStream) {
@@ -509,24 +811,35 @@ app.post("/api/chat", async (req, res) => {
       } catch (err: any) {
         const detailMsg = getFullErrorMessage(err);
         lastError = new Error(`API Error on model ${model}: ${detailMsg}`);
+        devLog(
+          "chat.model",
+          `Model ${model} failed, trying fallback`,
+          { error: detailMsg },
+          "warn"
+        );
         console.warn(`Model ${model} failed, attempting fallback if available:`, detailMsg);
       }
     }
 
     if (!responseStream) {
+      writeStatus({
+        phase: "failed",
+        triedModels,
+        error: lastError?.message || "all models failed",
+      });
       throw lastError || new Error("Failed to generate content with any model in the routing chain");
     }
 
-    // Set SSE headers or standard stream headers
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no'); // Disable proxy buffering for immediate delivery
+    writeStatus({ phase: "streaming", model: actualModelUsed, fallback: actualModelUsed !== primaryModel });
+
+    // Set SSE headers or standard stream headers — already set above
 
     let generatedText = "";
+    let chunkCount = 0;
     for await (const chunk of responseStream) {
       if (chunk.text) {
         generatedText += chunk.text;
+        chunkCount += 1;
         res.write(JSON.stringify({ type: "chunk", text: chunk.text }) + "\n");
       }
     }
@@ -569,9 +882,34 @@ app.post("/api/chat", async (req, res) => {
       outputTokenLimit: modelOutputTokenLimit,
     }) + "\n");
 
+    devLog("chat.response", "Chat stream completed", {
+      sessionId: chatSessionId,
+      durationMs: Date.now() - chatStartedAt,
+      modelUsed: actualModelUsed,
+      apiModelId: actualApiModelUsed,
+      fallbackOccurred: actualModelUsed !== primaryModel,
+      chunkCount,
+      responseChars: generatedText.length,
+      contextTokens: finalContextTokens,
+      outputTokens: finalOutputTokens,
+      userMessage: chatUserPreview,
+    });
+
     res.end();
 
   } catch (error: any) {
+    devLog(
+      "chat.error",
+      "Chat round failed",
+      {
+        sessionId: chatSessionId,
+        durationMs: Date.now() - chatStartedAt,
+        userMessage: chatUserPreview,
+        error: error?.message || String(error),
+        headersSent: res.headersSent,
+      },
+      "error"
+    );
     console.error("Error in /api/chat:", error);
     // If headers already sent, write error chunk instead of json
     if (res.headersSent) {

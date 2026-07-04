@@ -4,9 +4,8 @@ import Sidebar from './components/Sidebar';
 import TableOfContents from './components/TableOfContents';
 import ChatPanel from './components/ChatPanel';
 import DocPreview from './components/DocPreview';
-import { buildGemmaModelsFromApi, MODEL_API_MAP } from './modelCatalog';
+import { buildGemmaModelsFromApi, MODEL_API_MAP, GEMMA_MODEL_DEFINITIONS } from './modelCatalog';
 import {
-  mergeTocSections,
   findNextWritableSection,
   normalizeTocSections,
   getSectionDisplayLabel,
@@ -15,10 +14,15 @@ import {
   getChapterNumberForSection,
   buildChapterReviewMarkdown,
   buildConfirmedContentMarkdown,
+  applySuggestedToc,
   parseTocOutlineFromReply,
+  filterDocumentTocSections,
+  isInterviewQuestionToc,
+  repairTocSections,
 } from './tocUtils';
 import { sanitizeDraftContent, buildModelChatText, extractSuggestedTocFromJsonBuffer, shouldRequestTocFromAi, TOC_JSON_FOLLOWUP_PROMPT } from './contentUtils';
-import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight } from 'lucide-react';
+import { clientDevLog } from './devLogger';
+import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight, Plug } from 'lucide-react';
 
 export default function App() {
   const [sessions, setSessions] = useState<BrainstormSession[]>([]);
@@ -30,6 +34,8 @@ export default function App() {
     updatedContent: string;
     critique: string;
     currentActiveField: 'reasoning' | 'reply' | 'updatedContent' | 'critique' | 'none';
+    streamPhase?: 'connecting' | 'reasoning' | 'draft' | 'reply' | 'critique';
+    streamLabel?: string;
   }>({
     reasoning: '',
     reply: '',
@@ -47,15 +53,91 @@ export default function App() {
   const [adminError, setAdminError] = useState<string | null>(null);
   const [adminApiKey, setAdminApiKey] = useState('');
   const [serverMaskedApiKey, setServerMaskedApiKey] = useState('');
+  const [serverHasApiKey, setServerHasApiKey] = useState(false);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [isLoadingModels, setIsLoadingModels] = useState(false);
   const [modelsLoadError, setModelsLoadError] = useState<string | null>(null);
 
   const [modelSettings, setModelSettings] = useState<ModelSettings>({
+    activeProvider: 'gemini',
     selectedModelId: 'gemma-4-31b',
     routingEnabled: true,
-    models: []
+    models: [],
+    cursorProxy: {
+      baseUrl: 'http://168.107.36.218:8765/v1',
+      selectedModelId: 'composer-2.5',
+      models: [],
+    },
   });
+  const [settingsTab, setSettingsTab] = useState<'gemini' | 'cursor-proxy'>('gemini');
+  const [cursorProxyApiKey, setCursorProxyApiKey] = useState('');
+  const [serverMaskedCursorApiKey, setServerMaskedCursorApiKey] = useState('');
+  const [serverHasCursorApiKey, setServerHasCursorApiKey] = useState(false);
+  const [isLoadingCursorModels, setIsLoadingCursorModels] = useState(false);
+  const [cursorModelsLoadError, setCursorModelsLoadError] = useState<string | null>(null);
+  const [cursorProxyHealth, setCursorProxyHealth] = useState<string | null>(null);
+
+  const applyStaticGemmaModels = () => {
+    setModelSettings((prev) => ({
+      ...prev,
+      models: GEMMA_MODEL_DEFINITIONS.map((def) => ({
+        ...def,
+        apiModelId: MODEL_API_MAP[def.id],
+        inputTokenLimit: 0,
+        outputTokenLimit: 0,
+      })),
+    }));
+  };
+
+  const loadCursorModelsFromApi = async () => {
+    setIsLoadingCursorModels(true);
+    setCursorModelsLoadError(null);
+    setCursorProxyHealth(null);
+    try {
+      const healthRes = await fetch('/api/cursor-proxy/health');
+      if (healthRes.ok) {
+        const healthData = await healthRes.json();
+        setCursorProxyHealth(healthData.health?.ok ? '연결됨' : '응답 이상');
+      } else {
+        setCursorProxyHealth('연결 실패');
+      }
+
+      const res = await fetch('/api/cursor-proxy/models');
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `모델 목록 조회 실패 (${res.status})`);
+      }
+      const data = await res.json();
+      const models: ModelConfig[] = (data.models || [])
+        .filter((m: { id: string }) => m.id === 'composer-2.5')
+        .map((m: { id: string; name?: string; description?: string }) => ({
+          id: m.id,
+          name: m.name || 'Composer 2.5',
+          description: m.description || 'Cursor Proxy',
+          used: 0,
+        }));
+
+      setModelSettings((prev) => {
+        const hasSelected = models.some((m) => m.id === prev.cursorProxy.selectedModelId);
+        const selectedModelId =
+          hasSelected && !prev.cursorProxy.selectedModelId.includes('fast')
+            ? prev.cursorProxy.selectedModelId
+            : 'composer-2.5';
+        return {
+          ...prev,
+          cursorProxy: {
+            ...prev.cursorProxy,
+            models,
+            selectedModelId,
+          },
+        };
+      });
+    } catch (err: any) {
+      setCursorModelsLoadError(err.message || 'Cursor Proxy 모델 목록을 불러오지 못했습니다.');
+    } finally {
+      setIsLoadingCursorModels(false);
+    }
+  };
 
   const loadModelsFromApi = async () => {
     setIsLoadingModels(true);
@@ -84,6 +166,7 @@ export default function App() {
     } catch (err: any) {
       console.error('Failed to load models from API:', err);
       setModelsLoadError(err.message || 'API에서 모델 목록을 불러오지 못했습니다.');
+      applyStaticGemmaModels();
     } finally {
       setIsLoadingModels(false);
     }
@@ -102,6 +185,28 @@ export default function App() {
             routingEnabled: data.routingEnabled,
           }));
           setServerMaskedApiKey(data.maskedApiKey || '');
+          setServerHasApiKey(!!data.hasApiKey);
+          if (data.activeProvider) {
+            setModelSettings((prev) => ({
+              ...prev,
+              activeProvider: data.activeProvider,
+            }));
+          }
+          if (data.cursorProxy) {
+            setServerMaskedCursorApiKey(data.cursorProxy.maskedApiKey || '');
+            setServerHasCursorApiKey(!!data.cursorProxy.hasApiKey);
+            setModelSettings((prev) => ({
+              ...prev,
+              cursorProxy: {
+                ...prev.cursorProxy,
+                baseUrl: data.cursorProxy.baseUrl || prev.cursorProxy.baseUrl,
+                selectedModelId: data.cursorProxy.selectedModelId || 'composer-2.5',
+              },
+            }));
+            if (data.cursorProxy.hasApiKey) {
+              loadCursorModelsFromApi();
+            }
+          }
         }
       } catch (err) {
         console.error("Failed to load server config:", err);
@@ -114,11 +219,16 @@ export default function App() {
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setAdminError(null);
+    const password = adminPasswordInput.trim();
+    if (!password) {
+      setAdminError('비밀번호를 입력해 주세요.');
+      return;
+    }
     try {
       const res = await fetch('/api/admin/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: adminPasswordInput })
+        body: JSON.stringify({ password })
       });
       
       if (res.ok) {
@@ -130,14 +240,31 @@ export default function App() {
           routingEnabled: data.routingEnabled,
         }));
         setServerMaskedApiKey(data.maskedApiKey || '');
+        setServerHasApiKey(!!data.hasApiKey);
+        setServerMaskedCursorApiKey(data.cursorProxy?.maskedApiKey || '');
+        setServerHasCursorApiKey(!!data.cursorProxy?.hasApiKey);
         setAdminApiKey(data.maskedApiKey || '');
+        setCursorProxyApiKey(data.cursorProxy?.maskedApiKey || '');
+        if (data.activeProvider) {
+          setModelSettings((prev) => ({
+            ...prev,
+            activeProvider: data.activeProvider,
+            cursorProxy: {
+              ...prev.cursorProxy,
+              baseUrl: data.cursorProxy?.baseUrl || prev.cursorProxy.baseUrl,
+              selectedModelId: data.cursorProxy?.selectedModelId || 'composer-2.5',
+            },
+          }));
+        }
         setIsAdminAuthenticated(true);
+        loadModelsFromApi();
+        if (data.cursorProxy?.hasApiKey) loadCursorModelsFromApi();
       } else {
-        const errData = await res.json();
-        setAdminError(errData.error || "비밀번호가 올바르지 않습니다.");
+        const errData = await res.json().catch(() => ({}));
+        setAdminError(errData.error || '비밀번호가 올바르지 않습니다. (기본값: admin)');
       }
     } catch (err) {
-      setAdminError("관리자 설정 서버 연결에 실패했습니다.");
+      setAdminError('관리자 설정 서버 연결에 실패했습니다. 로컬이라면 npm run dev가 실행 중인지 확인해 주세요.');
     }
   };
 
@@ -153,6 +280,10 @@ export default function App() {
           geminiApiKey: adminApiKey,
           routingEnabled: modelSettings.routingEnabled,
           selectedModelId: modelSettings.selectedModelId,
+          activeProvider: modelSettings.activeProvider,
+          cursorProxyBaseUrl: modelSettings.cursorProxy.baseUrl,
+          cursorProxyApiKey: cursorProxyApiKey,
+          cursorSelectedModelId: modelSettings.cursorProxy.selectedModelId,
         })
       });
       
@@ -181,10 +312,21 @@ export default function App() {
     
     if (savedSessions) {
       try {
-        const parsed = JSON.parse(savedSessions).map((sess: BrainstormSession) => ({
-          ...sess,
-          toc: normalizeTocSections(sess.toc || []),
-        }));
+        const parsed = JSON.parse(savedSessions).map((sess: BrainstormSession) => {
+          let toc = repairTocSections(normalizeTocSections(sess.toc || []));
+          const polluted =
+            isInterviewQuestionToc(toc) &&
+            (sess.status === 'writing' || sess.status === 'reviewing');
+          if (polluted) {
+            toc = [];
+          }
+          return {
+            ...sess,
+            toc,
+            status: polluted ? ('interviewing' as const) : sess.status,
+            currentSectionId: polluted ? null : sess.currentSectionId,
+          };
+        });
         setSessions(parsed);
         if (savedActiveId && parsed.some((s: any) => s.id === savedActiveId)) {
           setActiveSessionId(savedActiveId);
@@ -218,15 +360,38 @@ export default function App() {
   const activeSession = sessions.find(s => s.id === activeSessionId) || null;
 
   // 4. streamChat helper for real-time streaming reasoning parsing
-  const streamChat = async (sessionState: BrainstormSession, userMessage: string): Promise<any> => {
+  const deriveStreamPhase = (
+    activeField: 'reasoning' | 'reply' | 'updatedContent' | 'critique' | 'none',
+    fields: { reasoning: string; reply: string; updatedContent: string; critique: string }
+  ): 'connecting' | 'reasoning' | 'draft' | 'reply' | 'critique' => {
+    if (activeField === 'updatedContent' || fields.updatedContent) return 'draft';
+    if (activeField === 'critique' || fields.critique) return 'critique';
+    if (activeField === 'reply' || fields.reply) return 'reply';
+    if (activeField === 'reasoning' || fields.reasoning) return 'reasoning';
+    return 'connecting';
+  };
+
+  const streamChat = async (
+    sessionState: BrainstormSession,
+    userMessage: string,
+    streamMeta?: { streamLabel?: string }
+  ): Promise<any> => {
     setRealTimeProgress({
       reasoning: '',
       reply: '',
       updatedContent: '',
       critique: '',
-      currentActiveField: 'none'
+      currentActiveField: 'none',
+      streamPhase: 'connecting',
+      streamLabel: streamMeta?.streamLabel,
     });
     const startTime = Date.now();
+
+    clientDevLog('chat.client', 'Stream request started', {
+      sessionId: sessionState.id,
+      status: sessionState.status,
+      userMessage: userMessage.slice(0, 200),
+    });
 
     const res = await fetch('/api/chat', {
       method: 'POST',
@@ -235,11 +400,20 @@ export default function App() {
         sessionState,
         userMessage,
         selectedModelId: modelSettings.selectedModelId,
-        routingEnabled: modelSettings.routingEnabled
+        routingEnabled: modelSettings.routingEnabled,
+        llmProvider: modelSettings.activeProvider,
+        cursorSelectedModelId: modelSettings.cursorProxy.selectedModelId,
       })
     });
 
     if (!res.ok) {
+      const errText = await res.text().catch(() => '');
+      clientDevLog(
+        'chat.client',
+        'Stream HTTP error',
+        { status: res.status, statusText: res.statusText, body: errText.slice(0, 500) },
+        'error'
+      );
       throw new Error(`API Error: ${res.statusText}`);
     }
 
@@ -304,7 +478,19 @@ export default function App() {
       for (const line of lines) {
         if (!line.trim()) continue;
 
-        let parsed: { type?: string; text?: string; message?: string; modelUsed?: string; contextTokens?: number; contextLimit?: number; outputTokens?: number; outputTokenLimit?: number };
+        let parsed: {
+          type?: string;
+          text?: string;
+          message?: string;
+          model?: string;
+          phase?: string;
+          fallback?: boolean;
+          modelUsed?: string;
+          contextTokens?: number;
+          contextLimit?: number;
+          outputTokens?: number;
+          outputTokenLimit?: number;
+        };
         try {
           parsed = JSON.parse(line);
         } catch {
@@ -325,13 +511,32 @@ export default function App() {
           if (fullJsonBuffer.includes('"updatedContent"')) activeField = 'updatedContent';
           if (fullJsonBuffer.includes('"critique"')) activeField = 'critique';
 
-          setRealTimeProgress({
+          setRealTimeProgress((prev) => ({
+            ...prev,
             reasoning,
             reply,
             updatedContent,
             critique,
             currentActiveField: activeField,
-          });
+            streamPhase: deriveStreamPhase(activeField, { reasoning, reply, updatedContent, critique }),
+          }));
+        } else if (parsed.type === "status") {
+          const modelName = parsed.model ? String(parsed.model) : "";
+          const isFallback = Boolean(parsed.fallback);
+          const phase = parsed.phase ? String(parsed.phase) : "";
+          let streamLabel = modelName ? `${modelName} 호출 중…` : "에이전트 연결 중…";
+          if (phase === "model_attempt" && isFallback) {
+            streamLabel = `주 모델 실패 → 백업 모델(${modelName})로 전환 중…`;
+          } else if (phase === "streaming" && isFallback) {
+            streamLabel = `백업 모델(${modelName})이 응답 작성 중…`;
+          } else if (phase === "streaming") {
+            streamLabel = `${modelName} 응답 작성 중…`;
+          }
+          setRealTimeProgress((prev) => ({
+            ...prev,
+            streamPhase: phase === "streaming" ? prev.streamPhase || "reasoning" : "connecting",
+            streamLabel,
+          }));
         } else if (parsed.type === "metadata") {
           modelUsed = parsed.modelUsed || "";
           contextTokens = parsed.contextTokens || 0;
@@ -339,12 +544,14 @@ export default function App() {
           outputTokens = parsed.outputTokens || 0;
           outputTokenLimit = parsed.outputTokenLimit || 0;
         } else if (parsed.type === "error") {
+          clientDevLog('chat.client', 'Stream error chunk', { message: parsed.message }, 'error');
           throw new Error(parsed.message || "서버 스트리밍 오류");
         }
       }
     }
 
     if (!fullJsonBuffer) {
+      clientDevLog('chat.client', 'Empty stream buffer', { sessionId: sessionState.id }, 'error');
       throw new Error("No data received from AI engine");
     }
 
@@ -397,11 +604,15 @@ export default function App() {
         }
       }
 
-      if (!data.suggestedToc?.length && data.reply) {
+      if (!data.suggestedToc?.length && data.reply && sessionState.toc.length === 0) {
         const fromReply = parseTocOutlineFromReply(data.reply);
         if (fromReply.length) {
           data.suggestedToc = fromReply;
         }
+      }
+
+      if (data.suggestedToc?.length) {
+        data.suggestedToc = filterDocumentTocSections(data.suggestedToc);
       }
 
       if (data.suggestedToc?.length) {
@@ -411,6 +622,11 @@ export default function App() {
         if (!data.currentSectionId) {
           const first = findNextWritableSection(normalizeTocSections(data.suggestedToc));
           if (first) data.currentSectionId = first.id;
+        }
+      } else {
+        delete data.suggestedToc;
+        if (data.sessionStatus === 'writing' && sessionState.status === 'interviewing') {
+          data.sessionStatus = 'interviewing';
         }
       }
 
@@ -435,6 +651,16 @@ export default function App() {
     if (outputTokenLimit) {
       data.outputTokenLimit = outputTokenLimit;
     }
+
+    clientDevLog('chat.client', 'Stream parsed successfully', {
+      sessionId: sessionState.id,
+      durationMs: Date.now() - startTime,
+      modelUsed: data.modelUsed,
+      hasReply: !!data.reply,
+      hasUpdatedContent: !!data.updatedContent,
+      suggestedTocCount: data.suggestedToc?.length ?? 0,
+      sessionStatus: data.sessionStatus,
+    });
     
     return data;
   };
@@ -442,9 +668,15 @@ export default function App() {
   const applyModelResponseToSession = (
     sess: BrainstormSession,
     data: any,
-    modelMsg: ChatMessage
+    modelMsg: ChatMessage,
+    userMessage?: string
   ): BrainstormSession => {
-    let updatedToc = mergeTocSections(sess.toc, data.suggestedToc);
+    let updatedToc = applySuggestedToc(
+      sess.toc,
+      data.suggestedToc,
+      data.reply || modelMsg.text,
+      { sessionStatus: sess.status, userMessage }
+    );
     const targetSectionId = data.currentSectionId || sess.currentSectionId;
 
     if (targetSectionId && data.updatedContent) {
@@ -474,6 +706,9 @@ export default function App() {
     }
 
     let nextSectionId = data.currentSectionId || sess.currentSectionId;
+    if (nextSectionId && !updatedToc.some((s) => s.id === nextSectionId)) {
+      nextSectionId = '';
+    }
     if (!nextSectionId && (data.sessionStatus === 'writing' || sess.status === 'writing')) {
       const firstWritable = findNextWritableSection(updatedToc);
       if (firstWritable) nextSectionId = firstWritable.id;
@@ -483,7 +718,10 @@ export default function App() {
       ...sess,
       history: [...sess.history, modelMsg],
       toc: updatedToc,
-      status: data.sessionStatus || sess.status,
+      status:
+        updatedToc.length > 0 || sess.status !== 'interviewing'
+          ? data.sessionStatus || sess.status
+          : 'interviewing',
       currentSectionId: nextSectionId,
       updatedAt: new Date().toISOString(),
     };
@@ -542,7 +780,11 @@ ${body}`;
 - suggestedToc 보내지 마세요
 - sessionStatus: "reviewing"`;
 
-  const executeChatRound = async (session: BrainstormSession, text: string) => {
+  const executeChatRound = async (
+    session: BrainstormSession,
+    text: string,
+    options?: { streamLabel?: string; hideUserMessage?: boolean }
+  ) => {
     setIsLoading(true);
     setErrorMessage(null);
     setRealTimeProgress({
@@ -551,36 +793,56 @@ ${body}`;
       updatedContent: '',
       critique: '',
       currentActiveField: 'none',
+      streamPhase: 'connecting',
+      streamLabel: options?.streamLabel,
     });
 
-    const userMsg: ChatMessage = {
-      id: `msg_user_${Date.now()}`,
-      role: 'user',
-      text,
-      timestamp: new Date().toISOString(),
-      type: 'chat',
-    };
+    const userMsg: ChatMessage | null = options?.hideUserMessage
+      ? null
+      : {
+          id: `msg_user_${Date.now()}`,
+          role: 'user',
+          text,
+          timestamp: new Date().toISOString(),
+          type: 'chat',
+        };
 
-    const sessionWithUser: BrainstormSession = {
-      ...session,
-      history: [...session.history, userMsg],
-      updatedAt: new Date().toISOString(),
-    };
+    const sessionWithUser: BrainstormSession = userMsg
+      ? {
+          ...session,
+          history: [...session.history, userMsg],
+          updatedAt: new Date().toISOString(),
+        }
+      : session;
 
-    setSessions((prev) => prev.map((s) => (s.id === session.id ? sessionWithUser : s)));
+    if (userMsg) {
+      setSessions((prev) => prev.map((s) => (s.id === session.id ? sessionWithUser : s)));
+    }
 
     const startTime = Date.now();
 
     try {
-      const data = await streamChat(sessionWithUser, text);
+      const data = await streamChat(sessionWithUser, text, { streamLabel: options?.streamLabel });
       const elapsed = (Date.now() - startTime) / 1000;
 
       if (data.modelUsed) {
+        const isCursor = data.modelUsed.startsWith('cursor:');
+        const rawId = isCursor ? data.modelUsed.replace(/^cursor:/, '') : data.modelUsed;
         setModelSettings((prev) => ({
           ...prev,
-          models: prev.models.map((m) =>
-            m.id === data.modelUsed ? { ...m, used: (m.used || 0) + 1 } : m
-          ),
+          models: isCursor
+            ? prev.models
+            : prev.models.map((m) =>
+                m.id === rawId ? { ...m, used: (m.used || 0) + 1 } : m
+              ),
+          cursorProxy: isCursor
+            ? {
+                ...prev.cursorProxy,
+                models: prev.cursorProxy.models.map((m) =>
+                  m.id === rawId ? { ...m, used: (m.used || 0) + 1 } : m
+                ),
+              }
+            : prev.cursorProxy,
         }));
       }
 
@@ -610,7 +872,7 @@ ${body}`;
       setSessions((prev) =>
         prev.map((sess) => {
           if (sess.id !== session.id) return sess;
-          const updated = applyModelResponseToSession(sess, data, modelMsg);
+          const updated = applyModelResponseToSession(sess, data, modelMsg, text);
           nextSession = updated;
           return updated;
         })
@@ -620,6 +882,12 @@ ${body}`;
     } catch (err: any) {
       console.error(err);
       const detail = err?.message ? String(err.message) : '알 수 없는 오류';
+      clientDevLog(
+        'chat.client',
+        'Chat round failed',
+        { sessionId: session.id, error: detail, userMessage: text.slice(0, 200) },
+        'error'
+      );
       setErrorMessage(
         detail.includes('API Error') || detail.includes('AI 응답')
           ? detail
@@ -640,8 +908,12 @@ ${body}`;
 
   const triggerSectionDraft = async (session: BrainstormSession, section: TocSection) => {
     if (isLoading || !section || section.isGroupHeader) return;
-    setMobileActiveTab('doc');
-    await executeChatRound(session, buildSectionDraftPrompt(section, session.toc));
+    const label = getSectionDisplayLabel(section, session.toc);
+    setMobileActiveTab('chat');
+    await executeChatRound(session, buildSectionDraftPrompt(section, session.toc), {
+      streamLabel: `'${label}' 집필 중`,
+      hideUserMessage: true,
+    });
   };
 
   // 4. Create new Brainstorming Session
@@ -702,13 +974,17 @@ ${body}`;
 
       setSessions(prev => prev.map(sess => {
         if (sess.id === newSessionId) {
+          const updatedToc = applySuggestedToc([], data.suggestedToc, data.reply);
+          const hasRealToc = updatedToc.length > 0;
           return {
             ...sess,
-            title: data.reply.includes('목차') || !data.suggestedToc ? sess.title : (data.suggestedToc[0]?.title || sess.title),
+            title: hasRealToc && data.suggestedToc?.[0]?.title
+              ? data.suggestedToc[0].title
+              : sess.title,
             history: [...sess.history, firstModelMsg],
-            toc: normalizeTocSections(data.suggestedToc || sess.toc),
-            status: data.sessionStatus || sess.status,
-            currentSectionId: data.currentSectionId || sess.currentSectionId,
+            toc: updatedToc,
+            status: hasRealToc ? (data.sessionStatus || 'writing') : 'interviewing',
+            currentSectionId: hasRealToc ? (data.currentSectionId || findNextWritableSection(updatedToc)?.id || null) : null,
             updatedAt: new Date().toISOString()
           };
         }
@@ -783,37 +1059,27 @@ ${body}`;
   // 7. Manual select/focus section in TOC
   const handleSelectSection = (sectionId: string) => {
     if (!activeSession) return;
-    
+
     setMobileActiveTab('doc');
-    setSessions(prev => prev.map(sess => {
-      if (sess.id === activeSession.id) {
-        const updatedToc = sess.toc.map(sec => {
+    setSessions((prev) =>
+      prev.map((sess) => {
+        if (sess.id !== activeSession.id) return sess;
+
+        const updatedToc = sess.toc.map((sec) => {
           if (sec.id === sectionId && sec.status === 'pending') {
             return { ...sec, status: 'writing' as const };
           }
           return sec;
         });
 
-        // Add a system notification about focal shift
-        const targetSection = sess.toc.find(s => s.id === sectionId);
-        const alertMsg: ChatMessage = {
-          id: `alert_${Date.now()}`,
-          role: 'system',
-          text: `[기획 세션 포커스] '${targetSection?.title || '섹션'}' 집필 모드로 진입했습니다. AI와 대화를 나눠보세요.`,
-          timestamp: new Date().toISOString(),
-          type: 'system_alert'
-        };
-
         return {
           ...sess,
           currentSectionId: sectionId,
           status: 'writing' as const,
           toc: updatedToc,
-          history: [...sess.history, alertMsg]
         };
-      }
-      return sess;
-    }));
+      })
+    );
   };
 
   // 8. Manual update of entire TOC structure
@@ -911,7 +1177,6 @@ ${body}`;
     };
 
     setSessions((prev) => prev.map((sess) => (sess.id === activeSession.id ? updatedSession : sess)));
-    setMobileActiveTab('doc');
 
     let sessionAfterReview: BrainstormSession = updatedSession;
 
@@ -923,7 +1188,10 @@ ${body}`;
 
     const freshNext = findNextWritableSection(sessionAfterReview.toc);
     if (freshNext && !freshNext.content) {
+      setMobileActiveTab('chat');
       await triggerSectionDraft(sessionAfterReview, { ...freshNext, status: 'writing' });
+    } else if (!freshNext) {
+      setMobileActiveTab('doc');
     }
   };
 
@@ -997,7 +1265,10 @@ ${body}`;
           
           <div className="flex items-center gap-1.5 shrink-0">
             <button
-              onClick={() => setIsSettingsOpen(true)}
+              onClick={() => {
+                setSettingsTab(modelSettings.activeProvider === 'cursor-proxy' ? 'cursor-proxy' : 'gemini');
+                setIsSettingsOpen(true);
+              }}
               className="px-2 py-1.5 md:px-3 bg-natural-bg hover:bg-natural-accent/10 border border-natural-border text-natural-title text-[11px] font-medium rounded-lg flex items-center gap-1.5 cursor-pointer transition-all shrink-0"
               title="모델 설정 및 한도 보기"
             >
@@ -1149,13 +1420,13 @@ ${body}`;
       {/* Model settings and Quota monitor modal */}
       {isSettingsOpen && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-xs flex items-center justify-center z-50 p-4 animate-fadeIn">
-          <div className="bg-natural-card border border-natural-border rounded-2xl max-w-md w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+          <div className="bg-natural-card border border-natural-border rounded-2xl max-w-lg w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
             {/* Modal Header */}
             <div className="px-4 py-3 border-b border-natural-border bg-natural-bg/50 flex items-center justify-between shrink-0">
               <div className="flex items-center gap-1.5 min-w-0">
                 <Settings className="w-4 h-4 text-natural-accent animate-spin-slow shrink-0" />
                 <h2 className="text-xs md:text-sm font-bold text-natural-title font-serif truncate">
-                  {!isAdminAuthenticated ? "🔒 관리자 인증" : "⚙️ 구글 API 전역 환경설정"}
+                  {!isAdminAuthenticated ? "🔒 관리자 인증" : "⚙️ LLM 전역 환경설정"}
                 </h2>
               </div>
               <button
@@ -1181,6 +1452,16 @@ ${body}`;
                   <h3 className="text-xs font-bold text-natural-title">관리자 인증이 필요합니다</h3>
                   <p className="text-[10px] text-natural-text/70 mt-0.5 leading-normal">
                     설정을 세팅하면 모든 접속자에게 전역 실시간 반영됩니다.
+                  </p>
+                  <p className={`text-[10px] mt-2 font-semibold ${serverHasApiKey ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    {serverHasApiKey
+                      ? `Gemini API 키: 등록됨${serverMaskedApiKey ? ` (${serverMaskedApiKey})` : ''}`
+                      : 'Gemini API 키: 미등록 — .env.local의 GEMINI_API_KEY 또는 로그인 후 입력'}
+                  </p>
+                  <p className={`text-[10px] mt-1 font-semibold ${serverHasCursorApiKey ? 'text-emerald-600' : 'text-amber-600'}`}>
+                    {serverHasCursorApiKey
+                      ? `Cursor Proxy 키: 등록됨${serverMaskedCursorApiKey ? ` (${serverMaskedCursorApiKey})` : ''}`
+                      : 'Cursor Proxy 키: 미등록 — .env.local의 CURSOR_PROXY_API_KEY 또는 로그인 후 입력'}
                   </p>
                 </div>
                 <div className="space-y-1 text-left">
@@ -1218,6 +1499,71 @@ ${body}`;
               </form>
             ) : (
               <div className="flex-1 overflow-y-auto p-4 md:p-5 flex flex-col gap-4">
+                {/* Active provider for chat */}
+                <div className="bg-natural-bg border border-natural-border p-3 rounded-xl flex flex-col gap-2">
+                  <h3 className="text-[10px] font-bold uppercase tracking-wider text-natural-text/50">채팅에 사용할 LLM</h3>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModelSettings((prev) => ({ ...prev, activeProvider: 'gemini' }));
+                        setSettingsTab('gemini');
+                      }}
+                      className={`px-3 py-2 rounded-lg border text-left text-[10px] font-semibold transition-all cursor-pointer ${
+                        modelSettings.activeProvider === 'gemini'
+                          ? 'border-natural-accent ring-1 ring-natural-accent bg-natural-accent/5 text-natural-title'
+                          : 'border-natural-border hover:border-natural-text/40 text-natural-text'
+                      }`}
+                    >
+                      Google Gemini
+                      <span className="block text-[9px] font-normal text-natural-text/60 mt-0.5">Gemma 4 등</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModelSettings((prev) => ({ ...prev, activeProvider: 'cursor-proxy' }));
+                        setSettingsTab('cursor-proxy');
+                      }}
+                      className={`px-3 py-2 rounded-lg border text-left text-[10px] font-semibold transition-all cursor-pointer ${
+                        modelSettings.activeProvider === 'cursor-proxy'
+                          ? 'border-natural-accent ring-1 ring-natural-accent bg-natural-accent/5 text-natural-title'
+                          : 'border-natural-border hover:border-natural-text/40 text-natural-text'
+                      }`}
+                    >
+                      Cursor Proxy
+                      <span className="block text-[9px] font-normal text-natural-text/60 mt-0.5">Composer 2.5 등</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Provider tabs */}
+                <div className="flex gap-1 p-1 bg-natural-bg border border-natural-border rounded-xl">
+                  <button
+                    type="button"
+                    onClick={() => setSettingsTab('gemini')}
+                    className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                      settingsTab === 'gemini'
+                        ? 'bg-natural-card text-natural-title shadow-sm'
+                        : 'text-natural-text/60 hover:text-natural-title'
+                    }`}
+                  >
+                    Google Gemini
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsTab('cursor-proxy')}
+                    className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                      settingsTab === 'cursor-proxy'
+                        ? 'bg-natural-card text-natural-title shadow-sm'
+                        : 'text-natural-text/60 hover:text-natural-title'
+                    }`}
+                  >
+                    Cursor Proxy
+                  </button>
+                </div>
+
+                {settingsTab === 'gemini' ? (
+                  <>
                 {/* API Key Form */}
                 <div className="bg-natural-bg border border-natural-border p-3.5 rounded-xl flex flex-col gap-2">
                   <div className="flex items-center gap-1.5">
@@ -1293,7 +1639,9 @@ ${body}`;
                   )}
 
                   {!isLoadingModels && modelSettings.models.length === 0 && !modelsLoadError && (
-                    <p className="text-[10px] text-natural-text/60 text-center py-4">사용 가능한 모델이 없습니다. API 키를 확인해 주세요.</p>
+                    <p className="text-[10px] text-natural-text/60 text-center py-4">
+                      모델 목록을 불러오지 못했습니다. 위 새로고침을 눌러 보세요.
+                    </p>
                   )}
 
                   {modelSettings.models.map((model) => {
@@ -1342,6 +1690,136 @@ ${body}`;
                     );
                   })}
                 </div>
+                  </>
+                ) : (
+                  <>
+                <div className="bg-natural-bg border border-natural-border p-3.5 rounded-xl flex flex-col gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <Plug className="w-3.5 h-3.5 text-violet-600" />
+                    <h3 className="text-xs font-bold text-natural-title">Cursor Proxy API 연동</h3>
+                  </div>
+                  <p className="text-[9.5px] text-natural-text/70 leading-normal">
+                    OpenAI 호환 Cursor Proxy 서버입니다. Composer 2.5만 사용하며 Fast 변형은 차단됩니다.
+                  </p>
+                  <label className="text-[10px] font-semibold text-natural-text/60">Base URL</label>
+                  <input
+                    type="text"
+                    value={modelSettings.cursorProxy.baseUrl}
+                    onChange={(e) =>
+                      setModelSettings((prev) => ({
+                        ...prev,
+                        cursorProxy: { ...prev.cursorProxy, baseUrl: e.target.value },
+                      }))
+                    }
+                    placeholder="http://168.107.36.218:8765/v1"
+                    className="w-full bg-natural-card border border-natural-border rounded-xl px-3 py-1.5 text-xs text-natural-title font-mono focus:outline-none focus:ring-1 focus:ring-natural-accent"
+                  />
+                  <label className="text-[10px] font-semibold text-natural-text/60 mt-1">API Key (Bearer)</label>
+                  <div className="flex gap-1.5">
+                    <input
+                      type="password"
+                      value={cursorProxyApiKey}
+                      onChange={(e) => setCursorProxyApiKey(e.target.value)}
+                      placeholder={
+                        serverMaskedCursorApiKey
+                          ? `등록 완료: ${serverMaskedCursorApiKey}`
+                          : 'Cursor Proxy Bearer 키 입력'
+                      }
+                      className="flex-1 bg-natural-card border border-natural-border rounded-xl px-3 py-1.5 text-xs text-natural-title focus:outline-none focus:ring-1 focus:ring-natural-accent"
+                    />
+                    {cursorProxyApiKey !== serverMaskedCursorApiKey && cursorProxyApiKey !== '' && (
+                      <button
+                        type="button"
+                        onClick={() => setCursorProxyApiKey(serverMaskedCursorApiKey)}
+                        className="px-2 py-1 bg-natural-border hover:bg-natural-hover text-natural-text text-[9.5px] font-semibold rounded-lg cursor-pointer"
+                      >
+                        취소
+                      </button>
+                    )}
+                  </div>
+                  {cursorProxyHealth && (
+                    <p className={`text-[9.5px] font-semibold ${cursorProxyHealth === '연결됨' ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      서버 상태: {cursorProxyHealth}
+                    </p>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-[9.5px] font-bold uppercase tracking-wider text-natural-text/50 font-mono">
+                      Cursor 모델 (Composer 2.5)
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={loadCursorModelsFromApi}
+                      disabled={isLoadingCursorModels}
+                      className="text-[9.5px] font-semibold text-natural-accent hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isLoadingCursorModels ? 'animate-spin' : ''}`} />
+                      새로고침
+                    </button>
+                  </div>
+
+                  {isLoadingCursorModels && (
+                    <p className="text-[10px] text-natural-text/60 text-center py-4">Cursor Proxy에서 모델 목록을 불러오는 중...</p>
+                  )}
+
+                  {cursorModelsLoadError && (
+                    <p className="text-[10px] text-rose-500 text-center py-2">{cursorModelsLoadError}</p>
+                  )}
+
+                  {!isLoadingCursorModels && modelSettings.cursorProxy.models.length === 0 && !cursorModelsLoadError && (
+                    <p className="text-[10px] text-natural-text/60 text-center py-4">
+                      API 키 저장 후 새로고침을 눌러 모델 목록을 불러오세요.
+                    </p>
+                  )}
+
+                  {modelSettings.cursorProxy.models.map((model) => {
+                    const isSelected = modelSettings.cursorProxy.selectedModelId === model.id;
+                    const isComposer = model.id === 'composer-2.5';
+
+                    return (
+                      <div
+                        key={model.id}
+                        onClick={() =>
+                          setModelSettings((prev) => ({
+                            ...prev,
+                            cursorProxy: { ...prev.cursorProxy, selectedModelId: model.id },
+                          }))
+                        }
+                        className={`border p-3 rounded-xl transition-all cursor-pointer flex flex-col gap-1.5 bg-natural-bg/30 ${
+                          isSelected
+                            ? 'border-natural-accent ring-1 ring-natural-accent bg-natural-accent/5'
+                            : 'border-natural-border hover:border-natural-text/40'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <input
+                              type="radio"
+                              name="cursorSelectedModel"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              className="text-natural-accent focus:ring-natural-accent shrink-0"
+                            />
+                            <span className="text-[11px] font-bold text-natural-title truncate">
+                              {isComposer ? 'Composer 2.5 (권장)' : model.name}
+                            </span>
+                          </div>
+                          <span className="text-[9px] text-natural-text/60 font-mono font-semibold shrink-0">
+                            이번 세션 {model.used || 0}회
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-natural-text/50 font-mono truncate">API: {model.id}</p>
+                        {model.description && (
+                          <p className="text-[10px] text-natural-text/75 leading-normal line-clamp-2">{model.description}</p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                  </>
+                )}
               </div>
             )}
 
@@ -1352,7 +1830,11 @@ ${body}`;
                   onClick={() => {
                     setModelSettings(prev => ({
                       ...prev,
-                      models: prev.models.map(m => ({ ...m, used: 0 }))
+                      models: prev.models.map(m => ({ ...m, used: 0 })),
+                      cursorProxy: {
+                        ...prev.cursorProxy,
+                        models: prev.cursorProxy.models.map(m => ({ ...m, used: 0 })),
+                      },
                     }));
                   }}
                   className="text-[9.5px] font-semibold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1 cursor-pointer"

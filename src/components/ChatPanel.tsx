@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
-import { Send, Sparkles, AlertCircle, RefreshCw, CheckSquare, Mic, MicOff, Brain, Clipboard, Check } from 'lucide-react';
+import { Send, Sparkles, AlertCircle, RefreshCw, CheckSquare, Mic, MicOff, Brain, Clipboard, Check, Loader2 } from 'lucide-react';
 
 import { buildModelChatText } from '../contentUtils';
 
@@ -28,32 +28,113 @@ function StreamingModelMessage({
     updatedContent: string;
     critique: string;
     currentActiveField: 'reasoning' | 'reply' | 'updatedContent' | 'critique' | 'none';
+    streamPhase?: 'connecting' | 'reasoning' | 'draft' | 'reply' | 'critique';
+    streamLabel?: string;
   };
 }) {
   const reasoning = progress?.reasoning || '';
   const reply = progress?.reply || '';
   const critique = progress?.critique || '';
+  const updatedContent = progress?.updatedContent || '';
   const activeField = progress?.currentActiveField || 'none';
+  const streamPhase = progress?.streamPhase || (reasoning ? 'reasoning' : 'connecting');
+  const streamLabel = progress?.streamLabel;
   const chatText = buildModelChatText(reply, critique);
   const displayReply = formatResponseText(chatText);
   const isReplyStreaming = activeField === 'reply' || activeField === 'critique';
-  const isReasoningStreaming = activeField === 'reasoning' && !chatText;
-  const isDraftStreaming = activeField === 'updatedContent' && !chatText;
+  const isReasoningStreaming = streamPhase === 'reasoning' || streamPhase === 'connecting';
+  const isDraftStreaming = streamPhase === 'draft' || activeField === 'updatedContent';
+  const draftPreview = formatResponseText(updatedContent).slice(0, 600);
+
+  const steps: Array<{ id: string; label: string; active: boolean; done: boolean }> = [
+    {
+      id: 'connecting',
+      label: '연결',
+      active: streamPhase === 'connecting',
+      done: streamPhase !== 'connecting',
+    },
+    {
+      id: 'reasoning',
+      label: '추론',
+      active: streamPhase === 'reasoning',
+      done: ['draft', 'reply', 'critique'].includes(streamPhase),
+    },
+    {
+      id: 'draft',
+      label: '초안',
+      active: streamPhase === 'draft',
+      done: ['reply', 'critique'].includes(streamPhase) && !!displayReply,
+    },
+    {
+      id: 'reply',
+      label: '답변',
+      active: streamPhase === 'reply' || streamPhase === 'critique',
+      done: false,
+    },
+  ];
 
   return (
     <div className="flex justify-start w-full animate-fadeIn" id="chat-streaming-message">
       <div className="max-w-[85%] rounded-2xl rounded-bl-none px-3 py-2 md:py-2.5 text-xs leading-relaxed shadow-sm bg-natural-card border border-natural-accent/25 text-natural-text">
-        {reasoning && (
-          <details open={isReasoningStreaming || (!reply && reasoning.length > 0)} className="mb-1.5">
+        {streamLabel && (
+          <p className="text-[9px] font-semibold text-natural-accent mb-1.5 flex items-center gap-1">
+            <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
+            {streamLabel}
+          </p>
+        )}
+
+        <div className="flex flex-wrap items-center gap-1 mb-2">
+          {steps.map((step, idx) => (
+            <React.Fragment key={step.id}>
+              <span
+                className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded-full border ${
+                  step.active
+                    ? 'bg-natural-accent/15 border-natural-accent/40 text-natural-accent'
+                    : step.done
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                      : 'bg-natural-bg border-natural-border text-natural-text/40'
+                }`}
+              >
+                {step.label}
+                {step.active && '…'}
+              </span>
+              {idx < steps.length - 1 && <span className="text-natural-text/25 text-[8px]">→</span>}
+            </React.Fragment>
+          ))}
+        </div>
+
+        {(reasoning || isReasoningStreaming) && (
+          <details open={isReasoningStreaming || reasoning.length > 0} className="mb-1.5">
             <summary className="flex items-center gap-1 text-[9px] text-natural-text/60 hover:text-natural-accent font-semibold cursor-pointer list-none select-none">
               <Brain className="w-3 h-3 text-natural-accent shrink-0" />
-              <span>{isReasoningStreaming ? '생각하는 중...' : '에이전트의 생각의 흐름'}</span>
+              <span>
+                {reasoning
+                  ? isReasoningStreaming
+                    ? '생각하는 중...'
+                    : '에이전트의 생각의 흐름'
+                  : '추론 준비 중...'}
+              </span>
               {isReasoningStreaming && <RefreshCw className="w-3 h-3 animate-spin text-natural-accent ml-1" />}
             </summary>
             <div className="mt-1.5 p-2 rounded-lg bg-natural-bg/50 text-[10px] text-natural-text/80 font-sans border border-natural-border/30 whitespace-pre-line leading-relaxed max-h-[140px] overflow-y-auto scrollbar-thin">
-              {formatResponseText(reasoning)}
+              {reasoning ? formatResponseText(reasoning) : '모델이 섹션 구성과 내용을 구상하고 있습니다...'}
             </div>
           </details>
+        )}
+
+        {isDraftStreaming && (
+          <div className="mb-1.5 p-2 rounded-lg bg-emerald-50/80 border border-emerald-100 text-[10px] text-emerald-900">
+            <div className="flex items-center gap-1.5 font-semibold mb-1">
+              <RefreshCw className="w-3 h-3 animate-spin text-emerald-600 shrink-0" />
+              <span>집필 초안 본문 작성 중… (오른쪽 집필 초안 탭에도 실시간 반영)</span>
+            </div>
+            {draftPreview && (
+              <p className="whitespace-pre-line text-emerald-950/80 leading-relaxed max-h-24 overflow-y-auto scrollbar-thin">
+                {draftPreview}
+                <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-emerald-600 animate-pulse" aria-hidden />
+              </p>
+            )}
+          </div>
         )}
 
         {displayReply ? (
@@ -63,17 +144,12 @@ function StreamingModelMessage({
               <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" aria-hidden />
             )}
           </p>
-        ) : isDraftStreaming ? (
-          <div className="flex items-center gap-2 text-natural-text/60 py-0.5">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600 shrink-0" />
-            <span>집필 초안 본문을 작성 중입니다. 오른쪽 <b>집필 초안</b> 탭에서 실시간으로 확인할 수 있습니다.</span>
-          </div>
-        ) : (
+        ) : !isDraftStreaming && !reasoning && streamPhase === 'connecting' ? (
           <div className="flex items-center gap-2 text-natural-text/60 py-0.5">
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-natural-accent shrink-0" />
-            <span>{reasoning ? '답변을 작성하고 있습니다...' : '에이전트가 응답을 준비하고 있습니다...'}</span>
+            <span>에이전트가 응답을 준비하고 있습니다...</span>
           </div>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -93,6 +169,8 @@ interface ChatPanelProps {
     updatedContent: string;
     critique: string;
     currentActiveField: 'reasoning' | 'reply' | 'updatedContent' | 'critique' | 'none';
+    streamPhase?: 'connecting' | 'reasoning' | 'draft' | 'reply' | 'critique';
+    streamLabel?: string;
   };
 }
 
@@ -129,9 +207,11 @@ export default function ChatPanel({
   
   const getModelName = (id: string) => {
     if (!id) return "자동 대기 중...";
-    if (id === 'gemma-4-31b') return "Gemma 4 31B";
-    if (id === 'gemma-4-26b') return "Gemma 4 26B";
-    return id;
+    const clean = id.replace(/^cursor:/, '');
+    if (clean === 'gemma-4-31b') return "Gemma 4 31B";
+    if (clean === 'gemma-4-26b') return "Gemma 4 26B";
+    if (clean === 'composer-2.5') return "Composer 2.5";
+    return clean;
   };
 
   useEffect(() => {
@@ -356,7 +436,7 @@ export default function ChatPanel({
 
   useEffect(() => {
     scrollToBottom();
-  }, [history, isLoading, realTimeProgress?.reply, realTimeProgress?.reasoning]);
+  }, [history, isLoading, realTimeProgress?.reply, realTimeProgress?.reasoning, realTimeProgress?.updatedContent]);
 
   // Shortcut suggestions based on state
   const getSuggestions = () => {
@@ -637,14 +717,15 @@ export default function ChatPanel({
               value={inputText}
               onChange={(e) => handleInputChange(e.target.value)}
               onKeyDown={handleInputKeyDown}
-              disabled={isLoading}
               rows={1}
               placeholder={
-                status === 'interviewing'
-                  ? '여기에 생각을 더 입력하거나 질문에 답해 보세요...'
-                  : '비평을 보고 아이디어를 더 보충하거나 고쳐 보세요...'
+                isLoading
+                  ? '에이전트가 응답 중입니다. 다음 메시지를 미리 적어 두셔도 됩니다...'
+                  : status === 'interviewing'
+                    ? '여기에 생각을 더 입력하거나 질문에 답해 보세요...'
+                    : '비평을 보고 아이디어를 더 보충하거나 고쳐 보세요...'
               }
-              className="flex-1 min-w-0 bg-natural-card border border-natural-border rounded-xl px-3 py-2 text-xs text-natural-title placeholder-natural-text/40 focus:outline-none focus:ring-1 focus:ring-natural-accent disabled:opacity-50 resize-none overflow-y-auto overflow-x-hidden break-words whitespace-pre-wrap leading-relaxed max-h-40"
+              className="flex-1 min-w-0 bg-natural-card border border-natural-border rounded-xl px-3 py-2 text-xs text-natural-title placeholder-natural-text/40 focus:outline-none focus:ring-1 focus:ring-natural-accent resize-none overflow-y-auto overflow-x-hidden break-words whitespace-pre-wrap leading-relaxed max-h-40"
             />
             <div className="flex gap-1.5 shrink-0">
               <button
@@ -665,10 +746,19 @@ export default function ChatPanel({
                 id="chat-send-submit"
                 type="submit"
                 disabled={isLoading || !inputText.trim()}
-                className="w-9 h-9 rounded-xl bg-natural-accent hover:bg-natural-accent-hover text-white transition disabled:opacity-50 flex items-center justify-center shrink-0 cursor-pointer shadow-sm"
-                title="전송"
+                className={`w-9 h-9 rounded-xl transition flex items-center justify-center shrink-0 shadow-sm ${
+                  isLoading
+                    ? 'bg-natural-accent/80 text-white cursor-wait'
+                    : 'bg-natural-accent hover:bg-natural-accent-hover text-white cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed'
+                }`}
+                title={isLoading ? '에이전트가 응답을 준비하고 있습니다' : '전송'}
+                aria-busy={isLoading}
               >
-                <Send className="w-4 h-4" />
+                {isLoading ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
               </button>
             </div>
           </div>

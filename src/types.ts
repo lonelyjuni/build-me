@@ -37,9 +37,15 @@ export interface ModelConfig {
 }
 
 export interface ModelSettings {
+  activeProvider: 'gemini' | 'cursor-proxy';
   selectedModelId: string;
   routingEnabled: boolean;
   models: ModelConfig[];
+  cursorProxy: {
+    baseUrl: string;
+    selectedModelId: string;
+    models: ModelConfig[];
+  };
 }
 
 export interface BrainstormSession {

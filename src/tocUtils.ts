@@ -196,16 +196,25 @@ export function mergeTocSections(
     existing.map((s) => [stripLeadingNumber(s.title).toLowerCase(), s])
   );
 
-  const merged = normalizedSuggested.map((s) => {
+  const merged = normalizedSuggested.flatMap((s) => {
+    if (isPollutedTocTitle(s.title) || isInterviewQuestionTitle(s.title)) {
+      return [];
+    }
+
     const old = existingById[s.id] || existingByTitle[stripLeadingNumber(s.title).toLowerCase()];
-    if (!old) return s;
-    return {
-      ...s,
-      id: old.id,
-      content: s.content || old.content,
-      feedback: s.feedback || old.feedback,
-      status: old.status === 'completed' ? 'completed' : (s.status || old.status),
-    };
+    if (!old) return [s];
+
+    return [
+      {
+        ...old,
+        content: s.content?.trim() ? s.content : old.content,
+        feedback: s.feedback || old.feedback,
+        status:
+          old.status === 'completed'
+            ? ('completed' as const)
+            : (s.status || old.status),
+      },
+    ];
   });
 
   for (const old of existing) {
@@ -215,6 +224,138 @@ export function mergeTocSections(
   }
 
   return normalizeTocSections(merged);
+}
+
+/** 인터뷰 질문이 목차에 잘못 들어간 경우 감지 */
+export function isInterviewQuestionToc(toc: TocSection[]): boolean {
+  const normalized = normalizeTocSections(toc);
+  if (normalized.length === 0) return false;
+
+  const questionLike = normalized.filter((s) => isInterviewQuestionTitle(s.title));
+  return questionLike.length >= Math.ceil(normalized.length / 2);
+}
+
+export function isInterviewQuestionTitle(title: string): boolean {
+  const t = stripLeadingNumber(title).trim();
+  return (
+    /[?？]$/.test(t) ||
+    /무엇인가요|누구인가요|있나요|어떻게|어떤|차별화.*포인트|타겟은|목적이|강조하거나|포함하고 싶은/i.test(t)
+  );
+}
+
+/** AI 답변·초안 설명이 목차 제목으로 잘못 들어간 경우 */
+export function isPollutedTocTitle(title: string): boolean {
+  const t = stripLeadingNumber(title).trim();
+  if (t.length > 72) return true;
+  if (/작성했습니다|초안을 작성|말씀해\s*주세요|동의하시나요|구성했습니다|이 섹션은|역할을 합니다|설정하여/.test(t)) {
+    return true;
+  }
+  if ((t.match(/[.?!…]/g) || []).length >= 2) return true;
+  return false;
+}
+
+/** 오염된 목차 제목을 짧은 제목으로 복구 */
+export function repairTocSectionTitle(sec: TocSection): TocSection {
+  if (!isPollutedTocTitle(sec.title)) return sec;
+
+  const quoted = sec.title.match(/['「『]([^'」』]{2,48})['」』]/);
+  const parsed = parseSectionNumber(sec.title);
+  const shortName = quoted?.[1]?.trim() || stripLeadingNumber(sec.title).slice(0, 24);
+
+  let title: string;
+  if (parsed.kind === 'child' && parsed.parentNum && parsed.childNum) {
+    title = `${parsed.parentNum}.${parsed.childNum} ${shortName}`;
+  } else if (parsed.kind === 'parent' && parsed.parentNum) {
+    title = `${parsed.parentNum}. ${shortName}`;
+  } else {
+    const num = sec.title.match(/^(\d+(?:\.\d+)?)/)?.[1];
+    title = num ? (num.includes('.') ? `${num} ${shortName}` : `${num}. ${shortName}`) : shortName;
+  }
+
+  return { ...sec, title };
+}
+
+export function repairTocSections(toc: TocSection[]): TocSection[] {
+  return normalizeTocSections(toc).map(repairTocSectionTitle);
+}
+
+/** 문서 목차로 쓸 수 있는 항목만 남김 (인터뷰 질문·답변 문장 제외) */
+export function filterDocumentTocSections(suggested: TocSection[]): TocSection[] {
+  return normalizeTocSections(suggested).filter(
+    (s) => !isInterviewQuestionTitle(s.title) && !isPollutedTocTitle(s.title)
+  );
+}
+
+export function isInterviewPhaseToc(suggested: TocSection[]): boolean {
+  const normalized = normalizeTocSections(suggested);
+  return normalized.length > 0 && normalized.every((s) => isInterviewQuestionTitle(s.title));
+}
+
+/** 기존 목차를 버리고 새 목차로 통째로 교체할지 */
+export function shouldReplaceTocEntirely(
+  existing: TocSection[],
+  suggested: TocSection[],
+  reply?: string,
+  userMessage?: string
+): boolean {
+  if (existing.length === 0 || !suggested.length) return false;
+  if (isInterviewQuestionToc(existing)) return true;
+
+  const userIntent = userMessage || "";
+  if (/목차.*(다시|재구성|바꿔|잡아)|다시.*목차|전체.*목차/i.test(userIntent)) {
+    return true;
+  }
+
+  if (reply && /재구성|목차를.*(바꿨|변경|수정)|새.*목차|다시.*목차|구조화했습니다/i.test(reply)) {
+    return true;
+  }
+  const docLike = suggested.filter((s) => !isInterviewQuestionTitle(s.title)).length;
+  return docLike >= suggested.length * 0.6 && isInterviewQuestionToc(existing);
+}
+
+/** AI suggestedToc 적용 — 인터뷰 질문 목차는 새 문서 목차로 교체 */
+export function applySuggestedToc(
+  existing: TocSection[],
+  suggested: TocSection[] | undefined,
+  reply?: string,
+  options?: { sessionStatus?: string; userMessage?: string }
+): TocSection[] {
+  if (!suggested || suggested.length === 0) {
+    return repairTocSections(existing);
+  }
+
+  const docSections = filterDocumentTocSections(suggested);
+  if (docSections.length === 0) {
+    return repairTocSections(existing);
+  }
+
+  const effective = docSections;
+  const hasEstablishedToc = existing.length > 0 && !isInterviewQuestionToc(existing);
+  const explicitReplace = shouldReplaceTocEntirely(
+    existing,
+    effective,
+    reply,
+    options?.userMessage
+  );
+
+  if (hasEstablishedToc && !explicitReplace) {
+    if (options?.sessionStatus === 'writing' || options?.sessionStatus === 'reviewing') {
+      return repairTocSections(existing);
+    }
+  }
+
+  if (explicitReplace) {
+    return repairTocSections(
+      effective.map((s) => ({
+        ...s,
+        content: '',
+        feedback: '',
+        status: 'pending' as const,
+      }))
+    );
+  }
+
+  return repairTocSections(mergeTocSections(existing, effective));
 }
 
 /** 집필 대상: 그룹 헤더(3.)가 아닌 실제 하위 섹션(3.1) 또는 자식 없는 상위 섹션 */
@@ -400,7 +541,8 @@ export function parseTocOutlineFromReply(reply: string): TocSection[] {
 
   const addSection = (num: string, rawTitle: string) => {
     const title = rawTitle.trim().replace(/^['"「『]|['"」』]$/g, '').trim();
-    if (!title || seen.has(num)) return;
+    if (!title || seen.has(num) || isInterviewQuestionTitle(title) || isPollutedTocTitle(title)) return;
+    if (title.length > 48) return;
     seen.add(num);
     const id = `sec_${num.replace(/\./g, '_')}`;
     const fullTitle = num.includes('.') ? `${num} ${title}` : `${num}. ${title}`;
@@ -419,6 +561,15 @@ export function parseTocOutlineFromReply(reply: string): TocSection[] {
       const cleaned = part.trim();
       if (cleaned) addSection(`1.${idx + 1}`, cleaned);
     });
+  }
+
+  for (const line of reply.split('\n')) {
+    if (line.includes('->')) {
+      line.split(/\s*->\s*/).forEach((part, idx) => {
+        const cleaned = part.trim().replace(/^[\[\(]|[\]\)]$/g, '');
+        if (cleaned && !cleaned.includes('->')) addSection(`1.${idx + 1}`, cleaned);
+      });
+    }
   }
 
   for (const line of reply.split('\n')) {

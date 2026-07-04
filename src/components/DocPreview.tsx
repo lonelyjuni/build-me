@@ -30,12 +30,12 @@ export default function DocPreview({
   const [activeTab, setActiveTab] = useState<'toc' | 'draft' | 'full'>('toc');
   const [copied, setCopied] = useState(false);
 
-  // Auto-switch to draft tab when content arrives or is streaming
+  // Auto-switch to draft tab when finalized content arrives (not during initial stream)
   useEffect(() => {
-    if (currentSection && (currentSection.content || streamingDraft)) {
+    if (currentSection?.content) {
       setActiveTab('draft');
     }
-  }, [currentSection?.id, currentSection?.content, streamingDraft]);
+  }, [currentSection?.id, currentSection?.content]);
 
   const draftContent = sanitizeDraftContent(streamingDraft || currentSection?.content || '');
 

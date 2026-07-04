@@ -2,6 +2,7 @@ import path from "path";
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import app from "./api/app.js";
+import { getDevLogDir, isDevLoggingEnabled } from "./api/devLogger.js";
 
 const PORT = 3000;
 
@@ -22,6 +23,10 @@ async function startServer() {
 
   app.listen(PORT, "0.0.0.0", () => {
     console.log(`BuildMe server running on http://localhost:${PORT}`);
+    if (isDevLoggingEnabled()) {
+      console.log(`Dev logs → ${getDevLogDir()} (today: buildme-${new Date().toISOString().slice(0, 10)}.log)`);
+      console.log(`Recent logs API → http://localhost:${PORT}/api/dev/logs`);
+    }
   });
 }
 

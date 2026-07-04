@@ -1,0 +1,17 @@
+---
+description: 로컬 실행 시 dev 서버 기동 + 오른쪽 브라우저 패널 오픈
+alwaysApply: true
+---
+
+# 로컬 실행 워크플로
+
+사용자가 **실행**, **로컬 실행**, **띄워줘**, **dev 서버** 등을 요청하면:
+
+1. 터미널에서 이미 `npm run dev`가 돌고 있는지 확인한다. 없거나 응답 없으면 `D:\Agent\build-me`에서 `npm run dev`를 백그라운드로 실행하고 `BuildMe server running`까지 대기한다.
+2. `http://127.0.0.1:3000` (또는 `http://localhost:3000`)이 200으로 응답하는지 확인한다.
+3. **cursor-ide-browser** MCP로 `browser_navigate`를 호출한다.
+   - `url`: `http://127.0.0.1:3000`
+   - `position`: `"side"` (오른쪽 브라우저 패널)
+4. 사용자에게 서버 주소와 브라우저를 열었음을 짧게 알린다.
+
+로그는 `logs/buildme-YYYY-MM-DD.log`와 `/api/dev/logs`에서 확인한다.
