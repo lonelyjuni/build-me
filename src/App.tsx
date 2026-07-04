@@ -302,49 +302,43 @@ export default function App() {
 
       for (const line of lines) {
         if (!line.trim()) continue;
+
+        let parsed: { type?: string; text?: string; message?: string; modelUsed?: string; contextTokens?: number; contextLimit?: number; outputTokens?: number; outputTokenLimit?: number };
         try {
-          const parsed = JSON.parse(line);
-          if (parsed.type === "chunk") {
-            fullJsonBuffer += parsed.text;
-            
-            const reasoning = extractJsonField(fullJsonBuffer, "reasoning");
-            const reply = extractJsonField(fullJsonBuffer, "reply");
-            const updatedContent = extractJsonField(fullJsonBuffer, "updatedContent");
-            const critique = extractJsonField(fullJsonBuffer, "critique");
+          parsed = JSON.parse(line);
+        } catch {
+          continue;
+        }
 
-            // Determine active field
-            let activeField: 'reasoning' | 'reply' | 'updatedContent' | 'critique' | 'none' = 'none';
-            if (fullJsonBuffer.includes('"reasoning"')) {
-              activeField = 'reasoning';
-            }
-            if (fullJsonBuffer.includes('"reply"')) {
-              activeField = 'reply';
-            }
-            if (fullJsonBuffer.includes('"updatedContent"')) {
-              activeField = 'updatedContent';
-            }
-            if (fullJsonBuffer.includes('"critique"')) {
-              activeField = 'critique';
-            }
+        if (parsed.type === "chunk") {
+          fullJsonBuffer += parsed.text || "";
 
-            setRealTimeProgress({
-              reasoning,
-              reply,
-              updatedContent,
-              critique,
-              currentActiveField: activeField
-            });
-          } else if (parsed.type === "metadata") {
-            modelUsed = parsed.modelUsed || "";
-            contextTokens = parsed.contextTokens || 0;
-            contextLimit = parsed.contextLimit || 0;
-            outputTokens = parsed.outputTokens || 0;
-            outputTokenLimit = parsed.outputTokenLimit || 0;
-          } else if (parsed.type === "error") {
-            throw new Error(parsed.message);
-          }
-        } catch (e) {
-          // ignore parsing error for incomplete line
+          const reasoning = extractJsonField(fullJsonBuffer, "reasoning");
+          const reply = extractJsonField(fullJsonBuffer, "reply");
+          const updatedContent = extractJsonField(fullJsonBuffer, "updatedContent");
+          const critique = extractJsonField(fullJsonBuffer, "critique");
+
+          let activeField: 'reasoning' | 'reply' | 'updatedContent' | 'critique' | 'none' = 'none';
+          if (fullJsonBuffer.includes('"reasoning"')) activeField = 'reasoning';
+          if (fullJsonBuffer.includes('"reply"')) activeField = 'reply';
+          if (fullJsonBuffer.includes('"updatedContent"')) activeField = 'updatedContent';
+          if (fullJsonBuffer.includes('"critique"')) activeField = 'critique';
+
+          setRealTimeProgress({
+            reasoning,
+            reply,
+            updatedContent,
+            critique,
+            currentActiveField: activeField,
+          });
+        } else if (parsed.type === "metadata") {
+          modelUsed = parsed.modelUsed || "";
+          contextTokens = parsed.contextTokens || 0;
+          contextLimit = parsed.contextLimit || 0;
+          outputTokens = parsed.outputTokens || 0;
+          outputTokenLimit = parsed.outputTokenLimit || 0;
+        } else if (parsed.type === "error") {
+          throw new Error(parsed.message || "서버 스트리밍 오류");
         }
       }
     }
@@ -355,17 +349,14 @@ export default function App() {
 
     const cleanAndParseJson = (text: string) => {
       let cleaned = text.trim();
-      // Remove leading markdown block if any
       if (cleaned.startsWith("```")) {
         cleaned = cleaned.replace(/^```[a-zA-Z]*\s*/, "");
       }
-      // Remove trailing markdown block if any
       if (cleaned.endsWith("```")) {
         cleaned = cleaned.replace(/\s*```$/, "");
       }
       cleaned = cleaned.trim();
-      
-      // If there is still extra text before/after, extract the JSON object { ... }
+
       const firstBrace = cleaned.indexOf("{");
       const lastBrace = cleaned.lastIndexOf("}");
       if (firstBrace !== -1 && lastBrace !== -1 && lastBrace > firstBrace) {
@@ -374,7 +365,30 @@ export default function App() {
       return JSON.parse(cleaned);
     };
 
-    const data = cleanAndParseJson(fullJsonBuffer);
+    const parseModelResponse = (text: string) => {
+      try {
+        return cleanAndParseJson(text);
+      } catch (parseErr) {
+        const reply = extractJsonField(text, "reply");
+        const reasoning = extractJsonField(text, "reasoning");
+        if (reply || reasoning) {
+          return {
+            reply: reply || "응답을 일부만 복구했습니다. 내용이 이상하면 다시 보내 주세요.",
+            reasoning,
+            updatedContent: extractJsonField(text, "updatedContent"),
+            critique: extractJsonField(text, "critique"),
+            sessionStatus: sessionState.status,
+          };
+        }
+        throw new Error(
+          parseErr instanceof Error
+            ? `AI 응답 형식 오류: ${parseErr.message}`
+            : "AI 응답 형식 오류"
+        );
+      }
+    };
+
+    const data = parseModelResponse(fullJsonBuffer);
     
     // Inject metadata if any
     if (modelUsed) {
@@ -576,7 +590,12 @@ ${body}`;
       return { data, nextSession };
     } catch (err: any) {
       console.error(err);
-      setErrorMessage('답변을 처리하는 도중 서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
+      const detail = err?.message ? String(err.message) : '알 수 없는 오류';
+      setErrorMessage(
+        detail.includes('API Error') || detail.includes('AI 응답')
+          ? detail
+          : `답변을 처리하는 도중 오류가 발생했습니다. (${detail})`
+      );
       return null;
     } finally {
       setIsLoading(false);

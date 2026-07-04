@@ -339,18 +339,32 @@ app.post("/api/chat", async (req, res) => {
 `;
 
     // Map history to Gemini API Content format
-    // Keep only last 15 messages to prevent context explosion but keep enough context
-    const recentHistory = sessionState.history.slice(-15);
+    const recentHistory = sessionState.history
+      .slice(-15)
+      .filter(
+        (msg: any) =>
+          (msg.role === "user" || msg.role === "model") &&
+          msg.type !== "system_alert" &&
+          typeof msg.text === "string" &&
+          msg.text.trim()
+      );
+
     const contents = recentHistory.map((msg: any) => ({
-      role: msg.role === 'user' ? 'user' : 'model',
-      parts: [{ text: msg.text }]
+      role: msg.role === "user" ? "user" : "model",
+      parts: [{ text: msg.text }],
     }));
 
-    // Append the current user message if it's not already in history
-    contents.push({
-      role: 'user',
-      parts: [{ text: userMessage }]
-    });
+    const isUserMsgAlreadyInHistory =
+      recentHistory.length > 0 &&
+      recentHistory[recentHistory.length - 1].role === "user" &&
+      recentHistory[recentHistory.length - 1].text === userMessage;
+
+    if (!isUserMsgAlreadyInHistory) {
+      contents.push({
+        role: "user",
+        parts: [{ text: userMessage }],
+      });
+    }
 
     const getFullErrorMessage = (err: any): string => {
       if (!err) return "Unknown error";
@@ -515,19 +529,31 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    // LLM 누적 컨텍스트 = 시스템 지시 + 세션 대화 + 이번 응답
-    const { contextTokens: measuredContext, outputTokens: measuredOutput } =
-      await countSessionContextTokens(
-        ai,
-        actualApiModelUsed,
-        systemInstruction,
-        sessionState,
-        userMessage,
-        generatedText
-      );
+    // LLM 누적 컨텍스트 = 시스템 지시 + 세션 대화 + 이번 응답 (실패해도 응답은 유지)
+    let finalContextTokens = Math.min(
+      modelInputTokenLimit,
+      Math.ceil(generatedText.length / 4)
+    );
+    let finalOutputTokens = Math.min(
+      modelOutputTokenLimit,
+      Math.ceil(generatedText.length / 2.5)
+    );
 
-    const finalContextTokens = Math.min(modelInputTokenLimit, measuredContext);
-    const finalOutputTokens = Math.min(modelOutputTokenLimit, measuredOutput);
+    try {
+      const { contextTokens: measuredContext, outputTokens: measuredOutput } =
+        await countSessionContextTokens(
+          ai,
+          actualApiModelUsed,
+          systemInstruction,
+          sessionState,
+          userMessage,
+          generatedText
+        );
+      finalContextTokens = Math.min(modelInputTokenLimit, measuredContext);
+      finalOutputTokens = Math.min(modelOutputTokenLimit, measuredOutput);
+    } catch (tokenErr) {
+      console.warn("countSessionContextTokens failed after stream:", tokenErr);
+    }
 
     // Send final metadata
     res.write(JSON.stringify({
