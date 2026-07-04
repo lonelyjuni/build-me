@@ -1,0 +1,6 @@
+{
+  "name": "BuildMe (빌드미)",
+  "description": "거친 아이디어를 AI 에이전트와의 브레인스토밍 인터뷰를 통해 구체화하고, 살아있는 목차를 기준으로 완성도 높은 태준위키 문서를 함께 집필하는 공동 기획 에이전트",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

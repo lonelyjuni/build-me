@@ -1,0 +1,79 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Playfair+Display:ital,wght@0,400;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-serif: "Playfair Display", ui-serif, Georgia, serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Natural Tones Theme Colors */
+  --color-natural-bg: #F5F2ED;
+  --color-natural-text: #4A4A40;
+  --color-natural-title: #2D2D2A;
+  --color-natural-sidebar: #EBE7E0;
+  --color-natural-border: #D9D4CC;
+  --color-natural-accent: #8B9D83;
+  --color-natural-accent-hover: #798C71;
+  --color-natural-hover: #E2DDD4;
+  --color-natural-peach: #E68A5C;
+  --color-natural-panel: #FBF9F6;
+  --color-natural-card: #FFFFFF;
+}
+
+/* Custom Scrollbar Styles */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-natural-border);
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-natural-accent);
+}
+
+/* Custom styles to handle markdown body beautifully in Natural Tones theme */
+.markdown-body h1, .markdown-body h2, .markdown-body h3 {
+  font-family: var(--font-serif);
+  color: var(--color-natural-title);
+  font-weight: 600;
+  margin-top: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+.markdown-body h1 { font-size: 1.5rem; }
+.markdown-body h2 { font-size: 1.25rem; border-bottom: 1px solid var(--color-natural-border); padding-bottom: 0.25rem; }
+.markdown-body h3 { font-size: 1.1rem; }
+.markdown-body p {
+  margin-bottom: 0.75rem;
+  line-height: 1.6;
+  color: var(--color-natural-text);
+}
+.markdown-body ul, .markdown-body ol {
+  margin-left: 1.25rem;
+  margin-bottom: 0.75rem;
+  list-style-type: decimal;
+}
+.markdown-body ul {
+  list-style-type: disc;
+}
+.markdown-body li {
+  margin-bottom: 0.25rem;
+}
+.markdown-body blockquote {
+  border-left: 3px solid var(--color-natural-accent);
+  padding-left: 1rem;
+  color: #6B6B5F;
+  font-style: italic;
+  margin: 1rem 0;
+}
+.markdown-body code {
+  font-family: var(--font-mono);
+  background-color: var(--color-natural-hover);
+  padding: 0.125rem 0.25rem;
+  border-radius: 0.25rem;
+  font-size: 0.85em;
+}
