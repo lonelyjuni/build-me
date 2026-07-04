@@ -1,4 +1,5 @@
 import { TocSection } from './types';
+import { sanitizeDraftContent } from './contentUtils';
 
 export interface TocDisplayRow {
   id: string;
@@ -314,13 +315,13 @@ export function buildFullWikiMarkdown(toc: TocSection[]): string {
     if (row.isGroupHeader) {
       blocks.push(`${mdLevel} ${heading}`, '');
       if (sec.content?.trim()) {
-        blocks.push(sec.content.trim(), '');
+        blocks.push(sanitizeDraftContent(sec.content), '');
       }
       continue;
     }
 
     const body = sec.content?.trim()
-      ? sec.content.trim()
+      ? sanitizeDraftContent(sec.content)
       : '*작성 대기 중인 섹션입니다. AI와 채팅을 통해 이 섹션을 채워 보세요.*';
 
     blocks.push(`${mdLevel} ${heading}`, '', body, '');

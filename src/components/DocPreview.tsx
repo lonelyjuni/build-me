@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { TocSection } from '../types';
 import { getSectionDisplayLabel, getWritableSections, buildFullWikiMarkdown } from '../tocUtils';
+import { sanitizeDraftContent } from '../contentUtils';
 import ReactMarkdown from 'react-markdown';
 import { FileText, Clipboard, Download, CheckCircle, BookOpen } from 'lucide-react';
 import TableOfContents from './TableOfContents';
@@ -36,7 +37,7 @@ export default function DocPreview({
     }
   }, [currentSection?.id, currentSection?.content, streamingDraft]);
 
-  const draftContent = streamingDraft || currentSection?.content || '';
+  const draftContent = sanitizeDraftContent(streamingDraft || currentSection?.content || '');
 
   const fullWikiMarkdown = buildFullWikiMarkdown(toc);
 
@@ -159,10 +160,14 @@ export default function DocPreview({
                   <h2 className="text-sm font-bold text-natural-accent flex items-center gap-1.5 font-serif">
                     <FileText className="w-4 h-4" /> {getSectionDisplayLabel(currentSection, toc)}
                   </h2>
-                  <span className="text-[10px] font-mono text-natural-text/50 capitalize">
-                    {isLoading && streamingDraft ? '초안 작성 중...' : `진행 상태: ${currentSection.status}`}
+                  <span className="text-[10px] font-mono text-natural-text/50">
+                    {isLoading && streamingDraft ? '본문 작성 중...' : `진행 상태: ${currentSection.status}`}
                   </span>
                 </div>
+
+                <p className="text-[10px] text-natural-text/45 -mt-2 mb-1">
+                  이 탭에는 기획서 본문만 표시됩니다. AI 설명·비평·피드백 대화는 왼쪽 채팅창을 확인하세요.
+                </p>
 
                 {draftContent ? (
                   <div className="markdown-body bg-natural-bg/25 p-4 rounded-xl border border-natural-border/40 font-sans">
@@ -175,15 +180,6 @@ export default function DocPreview({
                   <div className="p-8 text-center bg-natural-bg/10 border border-dashed border-natural-border rounded-xl">
                     <p className="text-natural-text/50 text-xs italic">
                       AI가 이 섹션의 초안을 작성하면<br />여기에 실시간으로 표시됩니다.
-                    </p>
-                  </div>
-                )}
-
-                {currentSection.feedback && (
-                  <div className="bg-amber-50/60 border border-amber-100 rounded-xl p-4">
-                    <h3 className="text-[11px] font-bold text-amber-800 mb-2">AI 비평 (맥킨지 스타일)</h3>
-                    <p className="text-[11px] text-amber-900/80 whitespace-pre-line leading-relaxed">
-                      {currentSection.feedback}
                     </p>
                   </div>
                 )}

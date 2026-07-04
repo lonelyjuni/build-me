@@ -183,11 +183,16 @@ app.post("/api/chat", async (req, res) => {
 
 3단계: 순차 집필 & 피드백 루프 - sessionStatus: 'writing' 또는 'reviewing'
 - 집필 단위는 하위 섹션(1.1, 1.2, 3.1...)입니다. 상위 섹션(1., 2., 3.)은 그룹 헤더이며 직접 집필하지 않습니다.
-- [초안 작성] currentSectionId에 해당하는 섹션의 전문을 updatedContent에 마크다운으로 작성합니다.
-- [비평] critique에 맥킨지 스타일 비평을 작성합니다.
-- [피드백 반영] 사용자가 수정 요청하면 updatedContent를 수정하고 critique도 갱신합니다. sessionStatus는 'reviewing'.
-- [확정] 사용자가 "확정"/"저장"하면 해당 섹션 status를 completed로, 다음 하위 섹션(예: 1.1→1.2)으로 currentSectionId를 이동합니다.
-- 집필 중에는 suggestedToc를 보내지 마세요 (목차 구조가 바뀔 필요가 없으면 생략). updatedContent와 critique에 집중하세요.
+
+[집필 초안 vs 대화창 — 반드시 분리]
+- updatedContent: 오직 해당 목차 섹션의 '기획서 본문'만 마크다운으로 작성. 메타 설명·작성 사유·인사·질문·비평·피드백 반영 설명·반박 의견을 절대 넣지 마세요. 제목(##)도 섹션 본문에 중복 넣지 마세요.
+- reply: 대화창용. 초안 작성 이유·구성 의도·핵심 포인트 설명, 사용자 피드백 수용/반박, 수정 사항 요약, 추가 질문을 여기에 작성합니다.
+- critique: 맥킨지 스타일 비평. reply에 요약을 넣고, critique에 상세 비평을 작성합니다. 둘 다 대화창에만 표시됩니다.
+- 집필 중 suggestedToc는 보내지 마세요.
+
+- [초안 작성] updatedContent에 본문만, reply/critique에 설명·비평
+- [피드백 반영] updatedContent 본문 수정, reply에 무엇을 바꿨는지·왜 그렇게 했는지·동의하지 않는 부분 반박
+- [확정] 사용자가 "확정"/"저장"하면 해당 섹션 completed, 다음 하위 섹션으로 이동
 
 [TOC 지속 검토]
 - 대화마다 목차 중복·누락을 점검하고, 수정 시에만 suggestedToc를 전체 목록으로 보냅니다.
@@ -205,7 +210,10 @@ app.post("/api/chat", async (req, res) => {
 - 목차(TOC): ${JSON.stringify(sessionState.toc.map((t: any) => ({ id: t.id, title: t.title, status: t.status, parentId: t.parentId })))}
 
 [응답 지침]
-위 맥락을 바탕으로 사용자 메시지 "${userMessage}"에 응답하세요. reply는 대화용, suggestedToc/updatedContent/critique/reasoning/sessionStatus/currentSectionId는 JSON 필드로 채우세요.
+위 맥락을 바탕으로 사용자 메시지 "${userMessage}"에 응답하세요.
+- reply + critique → 대화창 (설명·비평·피드백 대화 전부)
+- updatedContent → 집필 초안 탭 (순수 기획서 본문만)
+- suggestedToc / reasoning / sessionStatus / currentSectionId → JSON 필드
 `;
 
     // Map history to Gemini API Content format
@@ -272,7 +280,7 @@ app.post("/api/chat", async (req, res) => {
             });
           }
 
-          const jsonRequirement = `\n\n[IMPORTANT RESPONSE REQUIREMENT]\nYou MUST reply with a single, valid JSON object matching the following schema. Do NOT include any markdown code block wrappers (like \`\`\`json) or conversational introduction/conclusion outside the JSON object. Return ONLY the raw JSON string.\n\nJSON Schema:\n{\n  "reasoning": "Internal step-by-step thinking process in Korean. Think deeply and list reasoning steps before responding.",\n  "reply": "Conversational reply or interview question in Korean.",\n  "suggestedToc": [\n    { "id": "string", "title": "string", "status": "pending|writing|reviewing|completed", "content": "string (markdown)", "feedback": "string (critique)" }\n  ],\n  "updatedContent": "string (completed or modified markdown content for current section)",\n  "critique": "string (McKinsey-style critique/feedback)",\n  "sessionStatus": "interviewing|writing|reviewing|completed",\n  "currentSectionId": "string"\n}`;
+          const jsonRequirement = `\n\n[IMPORTANT RESPONSE REQUIREMENT]\nYou MUST reply with a single, valid JSON object. No markdown code fences. Return ONLY raw JSON.\n\nField rules:\n- "updatedContent": PURE section body markdown ONLY. No explanations, greetings, critique, or section title headers.\n- "reply": ALL conversational text — draft rationale, feedback acceptance, counter-arguments, questions.\n- "critique": McKinsey-style critique (shown in chat, NOT in draft).\n\nJSON Schema:\n{\n  "reasoning": "Internal thinking in Korean",\n  "reply": "Chat message in Korean — explanations, feedback dialogue, NOT draft body",\n  "suggestedToc": [{ "id": "string", "title": "string", "status": "pending|writing|reviewing|completed", "content": "", "feedback": "" }],\n  "updatedContent": "PURE markdown body for current section only — no meta text",\n  "critique": "McKinsey critique for chat only",\n  "sessionStatus": "interviewing|writing|reviewing|completed",\n  "currentSectionId": "string"\n}`;
           const lastMsg = modelContents[modelContents.length - 1];
           modelContents[modelContents.length - 1] = {
             ...lastMsg,
@@ -326,7 +334,7 @@ app.post("/api/chat", async (req, res) => {
               },
               reply: { 
                 type: Type.STRING, 
-                description: "?????????? ?? ??? ???. ?????????? ???, ??? ??? ??????." 
+                description: "대화창 전용. 초안 작성 사유, 피드백 수용/반박, 설명, 질문. 본문은 넣지 마세요." 
               },
               suggestedToc: {
                 type: Type.ARRAY,
@@ -349,11 +357,11 @@ app.post("/api/chat", async (req, res) => {
               },
               updatedContent: { 
                 type: Type.STRING, 
-                description: "??? ??/??? ?? ??????????????? ?? (?? ?? ?????)" 
+                description: "집필 초안 탭 전용. 해당 섹션 기획서 본문만. 설명·비평·인사 금지." 
               },
               critique: { 
                 type: Type.STRING, 
-                description: "???????????????? ??????? ??? ???????????? ?? ??? (?? ?? ?????)" 
+                description: "대화창 전용 맥킨지 스타일 비평. 집필 초안에 넣지 마세요." 
               },
               sessionStatus: { 
                 type: Type.STRING, 

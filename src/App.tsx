@@ -5,13 +5,8 @@ import TableOfContents from './components/TableOfContents';
 import ChatPanel from './components/ChatPanel';
 import DocPreview from './components/DocPreview';
 import { buildGemmaModelsFromApi, MODEL_API_MAP } from './modelCatalog';
-import {
-  mergeTocSections,
-  findNextWritableSection,
-  normalizeTocSections,
-  getSectionDisplayLabel,
-  buildFullWikiMarkdown,
-} from './tocUtils';
+import { buildFullWikiMarkdown, mergeTocSections, findNextWritableSection, normalizeTocSections, getSectionDisplayLabel } from './tocUtils';
+import { sanitizeDraftContent, buildModelChatText } from './contentUtils';
 import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight } from 'lucide-react';
 
 export default function App() {
@@ -400,11 +395,12 @@ export default function App() {
     const targetSectionId = data.currentSectionId || sess.currentSectionId;
 
     if (targetSectionId && data.updatedContent) {
+      const pureContent = sanitizeDraftContent(data.updatedContent);
       updatedToc = updatedToc.map((sec) => {
         if (sec.id === targetSectionId) {
           return {
             ...sec,
-            content: data.updatedContent,
+            content: pureContent,
             status: sec.status === 'pending' ? ('writing' as const) : sec.status,
           };
         }
@@ -417,7 +413,6 @@ export default function App() {
         if (sec.id === targetSectionId) {
           return {
             ...sec,
-            feedback: data.critique,
             status: 'reviewing' as const,
           };
         }
@@ -442,12 +437,12 @@ export default function App() {
   };
 
   const buildSectionDraftPrompt = (section: TocSection, toc: TocSection[]) =>
-    `[자동 집필 시작] "${getSectionDisplayLabel(section, toc)}" 섹션의 전문 마크다운 초안을 지금 작성해 주세요.
+    `[자동 집필 시작] "${getSectionDisplayLabel(section, toc)}" 섹션 초안을 작성해 주세요.
+- updatedContent: 기획서 본문만 (설명·비평·인사 없이 순수 마크다운 본문)
+- reply: 왜 이렇게 썼는지, 구성 의도, 핵심 포인트 설명 (대화창용)
+- critique: 맥킨지 스타일 비평 (대화창용)
 - currentSectionId: "${section.id}"
-- updatedContent: 이 섹션의 완성된 초안 전문(마크다운, 충분한 분량)
-- critique: 맥킨지 스타일 비평 3~5줄
-- reply: 초안 작성 완료를 짧게 안내하고 피드백을 요청
-- suggestedToc는 보내지 마세요(목차 구조 변경 금지)
+- suggestedToc 보내지 마세요
 - sessionStatus: "reviewing"`;
 
   const executeChatRound = async (session: BrainstormSession, text: string) => {
@@ -492,10 +487,16 @@ export default function App() {
         }));
       }
 
+      const chatText =
+        buildModelChatText(data.reply, data.critique) ||
+        (data.updatedContent
+          ? '집필 초안을 작성했습니다. 오른쪽 **집필 초안** 탭에서 본문을 확인하고, 여기서 피드백을 주세요.'
+          : data.reply || '');
+
       const modelMsg: ChatMessage = {
         id: `msg_model_${Date.now()}`,
         role: 'model',
-        text: data.reply,
+        text: chatText,
         timestamp: new Date().toISOString(),
         type: 'chat',
         reasoning: data.reasoning,
@@ -587,7 +588,7 @@ export default function App() {
       const firstModelMsg: ChatMessage = {
         id: `msg_model_first`,
         role: 'model',
-        text: data.reply,
+        text: buildModelChatText(data.reply, data.critique) || data.reply,
         timestamp: new Date().toISOString(),
         type: 'chat',
         contextTokens: data.contextTokens,
@@ -931,7 +932,7 @@ export default function App() {
                   isLoading={isLoading}
                   streamingDraft={
                     isLoading && realTimeProgress.currentActiveField === 'updatedContent'
-                      ? realTimeProgress.updatedContent
+                      ? sanitizeDraftContent(realTimeProgress.updatedContent)
                       : ''
                   }
                 />

@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
 import { Send, Sparkles, AlertCircle, RefreshCw, CheckSquare, Mic, MicOff, Brain } from 'lucide-react';
 
+import { buildModelChatText } from '../contentUtils';
+
 function formatResponseText(text: string): string {
   if (!text) return '';
   return text
@@ -22,10 +24,13 @@ function StreamingModelMessage({
 }) {
   const reasoning = progress?.reasoning || '';
   const reply = progress?.reply || '';
+  const critique = progress?.critique || '';
   const activeField = progress?.currentActiveField || 'none';
-  const displayReply = formatResponseText(reply);
-  const isReplyStreaming = activeField === 'reply';
-  const isReasoningStreaming = activeField === 'reasoning' && !reply;
+  const chatText = buildModelChatText(reply, critique);
+  const displayReply = formatResponseText(chatText);
+  const isReplyStreaming = activeField === 'reply' || activeField === 'critique';
+  const isReasoningStreaming = activeField === 'reasoning' && !chatText;
+  const isDraftStreaming = activeField === 'updatedContent' && !chatText;
 
   return (
     <div className="flex justify-start w-full animate-fadeIn" id="chat-streaming-message">
@@ -50,6 +55,11 @@ function StreamingModelMessage({
               <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" aria-hidden />
             )}
           </p>
+        ) : isDraftStreaming ? (
+          <div className="flex items-center gap-2 text-natural-text/60 py-0.5">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-emerald-600 shrink-0" />
+            <span>집필 초안 본문을 작성 중입니다. 오른쪽 <b>집필 초안</b> 탭에서 실시간으로 확인할 수 있습니다.</span>
+          </div>
         ) : (
           <div className="flex items-center gap-2 text-natural-text/60 py-0.5">
             <RefreshCw className="w-3.5 h-3.5 animate-spin text-natural-accent shrink-0" />
