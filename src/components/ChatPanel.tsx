@@ -9,217 +9,53 @@ function formatResponseText(text: string): string {
     .replace(/\/n/g, '\n');
 }
 
-function ThinkingProgress({ 
-  progress 
-}: { 
+function StreamingModelMessage({
+  progress,
+}: {
   progress?: {
     reasoning: string;
     reply: string;
     updatedContent: string;
     critique: string;
     currentActiveField: 'reasoning' | 'reply' | 'updatedContent' | 'critique' | 'none';
-  } 
+  };
 }) {
-  const [elapsed, setElapsed] = useState(0);
-
-  useEffect(() => {
-    const startTime = Date.now();
-    const timer = setInterval(() => {
-      setElapsed((Date.now() - startTime) / 1000);
-    }, 100);
-
-    return () => clearInterval(timer);
-  }, []);
-
-  if (!progress) {
-    return (
-      <div className="flex justify-start w-full animate-fadeIn" id="chat-thinking-block">
-        <div className="bg-natural-card border border-natural-border/60 text-natural-text/90 rounded-2xl rounded-bl-none p-3.5 max-w-[85%] shadow-md flex flex-col gap-2.5 w-full">
-          <div className="flex items-center justify-between gap-4 border-b border-natural-border/30 pb-2">
-            <div className="flex items-center gap-2">
-              <RefreshCw className="w-3.5 h-3.5 animate-spin text-natural-accent" />
-              <span className="font-bold text-xs text-natural-title font-sans">에이전트가 생각하고 있습니다...</span>
-            </div>
-            <span className="text-[10px] text-natural-accent font-mono font-bold bg-natural-accent/10 px-2 py-0.5 rounded-full">
-              ⏱️ {elapsed.toFixed(1)}초 경과
-            </span>
-          </div>
-          <div className="text-[10.5px] text-natural-text/85 font-sans leading-relaxed bg-natural-bg/40 p-2.5 rounded-lg border border-natural-border/20 max-h-[160px] overflow-y-auto scrollbar-thin whitespace-pre-line text-left">
-            추론을 준비하고 있습니다...
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const { reasoning, reply, updatedContent, critique, currentActiveField } = progress;
-
-  // Determine completion of steps
-  const isReasoningDone = !!reply || currentActiveField === 'reply' || currentActiveField === 'updatedContent' || currentActiveField === 'critique';
-  const isReplyDone = !!updatedContent || !!critique || currentActiveField === 'updatedContent' || currentActiveField === 'critique';
-  const isContentDone = !!critique || currentActiveField === 'critique';
-  
-  // Check if we even have these fields in generation
-  const hasContent = updatedContent.length > 0 || currentActiveField === 'updatedContent';
-  const hasCritique = critique.length > 0 || currentActiveField === 'critique';
+  const reasoning = progress?.reasoning || '';
+  const reply = progress?.reply || '';
+  const activeField = progress?.currentActiveField || 'none';
+  const displayReply = formatResponseText(reply);
+  const isReplyStreaming = activeField === 'reply';
+  const isReasoningStreaming = activeField === 'reasoning' && !reply;
 
   return (
-    <div className="flex justify-start w-full animate-fadeIn" id="chat-thinking-block">
-      <div className="bg-natural-card border border-natural-border/60 text-natural-text/90 rounded-2xl rounded-bl-none p-4 max-w-[95%] sm:max-w-[85%] shadow-lg flex flex-col gap-3.5 w-full">
-        {/* Header */}
-        <div className="flex items-center justify-between gap-4 border-b border-natural-border/30 pb-2.5">
-          <div className="flex items-center gap-2">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin text-natural-accent" />
-            <span className="font-bold text-xs text-natural-title font-sans">에이전트가 생각하고 있습니다...</span>
+    <div className="flex justify-start w-full animate-fadeIn" id="chat-streaming-message">
+      <div className="max-w-[85%] rounded-2xl rounded-bl-none px-3 py-2 md:py-2.5 text-xs leading-relaxed shadow-sm bg-natural-card border border-natural-accent/25 text-natural-text">
+        {reasoning && (
+          <details open={isReasoningStreaming || (!reply && reasoning.length > 0)} className="mb-1.5">
+            <summary className="flex items-center gap-1 text-[9px] text-natural-text/60 hover:text-natural-accent font-semibold cursor-pointer list-none select-none">
+              <Brain className="w-3 h-3 text-natural-accent shrink-0" />
+              <span>{isReasoningStreaming ? '생각하는 중...' : '에이전트의 생각의 흐름'}</span>
+              {isReasoningStreaming && <RefreshCw className="w-3 h-3 animate-spin text-natural-accent ml-1" />}
+            </summary>
+            <div className="mt-1.5 p-2 rounded-lg bg-natural-bg/50 text-[10px] text-natural-text/80 font-sans border border-natural-border/30 whitespace-pre-line leading-relaxed max-h-[140px] overflow-y-auto scrollbar-thin">
+              {formatResponseText(reasoning)}
+            </div>
+          </details>
+        )}
+
+        {displayReply ? (
+          <p className="whitespace-pre-line">
+            {displayReply}
+            {isReplyStreaming && (
+              <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" aria-hidden />
+            )}
+          </p>
+        ) : (
+          <div className="flex items-center gap-2 text-natural-text/60 py-0.5">
+            <RefreshCw className="w-3.5 h-3.5 animate-spin text-natural-accent shrink-0" />
+            <span>{reasoning ? '답변을 작성하고 있습니다...' : '에이전트가 응답을 준비하고 있습니다...'}</span>
           </div>
-          <span className="text-[10px] text-natural-accent font-mono font-bold bg-natural-accent/10 px-2.5 py-0.5 rounded-full">
-            ⏱️ {elapsed.toFixed(1)}초 경과
-          </span>
-        </div>
-
-        {/* Step-by-Step Generation Flow */}
-        <div className="space-y-3.5 text-left">
-          
-          {/* Step 1: Brainstorming & Reasoning */}
-          <div className="flex gap-2.5 text-xs">
-            <div className="flex flex-col items-center shrink-0 mt-0.5">
-              <span className={`flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold ${
-                isReasoningDone 
-                  ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/30' 
-                  : 'bg-natural-accent/15 text-natural-accent border border-natural-accent/30 animate-pulse'
-              }`}>
-                {isReasoningDone ? '✓' : '1'}
-              </span>
-              <div className="w-0.5 h-full bg-natural-border/30 min-h-[12px] mt-1" />
-            </div>
-            <div className="flex flex-col gap-1 w-full">
-              <span className={`font-semibold text-xs ${isReasoningDone ? 'text-natural-text/50' : 'text-natural-title'}`}>
-                기획 방향성 분석 및 실시간 추론 (AI Reasoning)
-              </span>
-              
-              {/* Show the reasoning box */}
-              {reasoning && (
-                <div className="text-[10.5px] text-natural-text/85 font-sans leading-relaxed bg-natural-bg/40 p-2.5 rounded-lg border border-natural-border/20 max-h-[120px] overflow-y-auto scrollbar-thin whitespace-pre-line text-left mt-1">
-                  {reasoning}
-                </div>
-              )}
-              {!reasoning && (
-                <span className="text-[10.5px] text-natural-text/45 leading-relaxed">
-                  사용자 의도를 심층 분석하여 기획 맥락을 정리하는 중...
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Step 2: Generating Response Message */}
-          <div className="flex gap-2.5 text-xs">
-            <div className="flex flex-col items-center shrink-0 mt-0.5">
-              <span className={`flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold ${
-                isReplyDone 
-                  ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/30' 
-                  : (currentActiveField === 'reply' 
-                      ? 'bg-natural-accent/15 text-natural-accent border border-natural-accent/30 animate-pulse' 
-                      : 'bg-natural-bg border border-natural-border/40 text-natural-text/30')
-              }`}>
-                {isReplyDone ? '✓' : '2'}
-              </span>
-              {(hasContent || hasCritique) && <div className="w-0.5 h-full bg-natural-border/30 min-h-[12px] mt-1" />}
-            </div>
-            <div className="flex flex-col gap-0.5 w-full">
-              <span className={`font-semibold text-xs ${
-                isReplyDone 
-                  ? 'text-natural-text/50' 
-                  : (currentActiveField === 'reply' ? 'text-natural-title' : 'text-natural-text/30')
-              }`}>
-                대화 답변 및 피드백 메시지 작성
-              </span>
-              {currentActiveField === 'reply' && (
-                <span className="text-[10px] text-natural-accent font-semibold animate-pulse">
-                  ✍️ 답변 메시지 생성 중... ({reply.length}자 돌파)
-                </span>
-              )}
-              {isReplyDone && (
-                <span className="text-[10px] text-emerald-600/80 font-medium">
-                  ✓ 완료 ({reply.length}자 생성됨)
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Step 3: Content Drafting (If active or present) */}
-          {hasContent && (
-            <div className="flex gap-2.5 text-xs">
-              <div className="flex flex-col items-center shrink-0 mt-0.5">
-                <span className={`flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold ${
-                  isContentDone 
-                    ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/30' 
-                    : (currentActiveField === 'updatedContent' 
-                        ? 'bg-natural-accent/15 text-natural-accent border border-natural-accent/30 animate-pulse' 
-                        : 'bg-natural-bg border border-natural-border/40 text-natural-text/30')
-                }`}>
-                  {isContentDone ? '✓' : '3'}
-                </span>
-                {hasCritique && <div className="w-0.5 h-full bg-natural-border/30 min-h-[12px] mt-1" />}
-              </div>
-              <div className="flex flex-col gap-0.5 w-full">
-                <span className={`font-semibold text-xs ${
-                  isContentDone 
-                    ? 'text-natural-text/50' 
-                    : (currentActiveField === 'updatedContent' ? 'text-natural-title' : 'text-natural-text/30')
-                }`}>
-                  기획서 상세 본문 집필 (SOP Drafting)
-                </span>
-                {currentActiveField === 'updatedContent' && (
-                  <span className="text-[10px] text-natural-accent font-semibold animate-pulse">
-                    📝 상세 섹션 내용 집필 중... ({updatedContent.length}자 작성됨)
-                  </span>
-                )}
-                {isContentDone && (
-                  <span className="text-[10px] text-emerald-600/80 font-medium">
-                    ✓ 본문 완성 ({updatedContent.length}자 집필 완료)
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Step 4: McKinsey Critique (If active or present) */}
-          {hasCritique && (
-            <div className="flex gap-2.5 text-xs">
-              <div className="flex flex-col items-center shrink-0 mt-0.5">
-                <span className={`flex items-center justify-center w-4 h-4 rounded-full text-[9px] font-bold ${
-                  currentActiveField === 'none' 
-                    ? 'bg-emerald-500/10 text-emerald-600 border border-emerald-500/30' 
-                    : (currentActiveField === 'critique' 
-                        ? 'bg-natural-accent/15 text-natural-accent border border-natural-accent/30 animate-pulse' 
-                        : 'bg-natural-bg border border-natural-border/40 text-natural-text/30')
-                }`}>
-                  {currentActiveField === 'none' ? '✓' : '4'}
-                </span>
-              </div>
-              <div className="flex flex-col gap-0.5 w-full">
-                <span className={`font-semibold text-xs ${
-                  currentActiveField === 'none' 
-                    ? 'text-natural-text/50' 
-                    : (currentActiveField === 'critique' ? 'text-natural-title' : 'text-natural-text/30')
-                }`}>
-                  맥킨지 관점 입체적 논리 비평 (Critique)
-                </span>
-                {currentActiveField === 'critique' && (
-                  <span className="text-[10px] text-natural-accent font-semibold animate-pulse">
-                    🔍 맹점 분석 및 냉철한 비평 생성 중... ({critique.length}자 작성됨)
-                  </span>
-                )}
-                {currentActiveField === 'none' && (
-                  <span className="text-[10px] text-emerald-600/80 font-medium">
-                    ✓ 비평 검토 완료 ({critique.length}자 생성됨)
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
-        </div>
+        )}
       </div>
     </div>
   );
@@ -469,7 +305,7 @@ export default function ChatPanel({
 
   useEffect(() => {
     scrollToBottom();
-  }, [history, isLoading]);
+  }, [history, isLoading, realTimeProgress?.reply, realTimeProgress?.reasoning]);
 
   // Shortcut suggestions based on state
   const getSuggestions = () => {
@@ -682,7 +518,7 @@ export default function ChatPanel({
         )}
         
         {isLoading && (
-          <ThinkingProgress progress={realTimeProgress} />
+          <StreamingModelMessage progress={realTimeProgress} />
         )}
         <div ref={messagesEndRef} />
       </div>
