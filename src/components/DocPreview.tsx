@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { TocSection } from '../types';
+import { getSectionDisplayLabel, getWritableSections } from '../tocUtils';
 import ReactMarkdown from 'react-markdown';
-import { FileText, Clipboard, Download, CheckCircle, List, BookOpen } from 'lucide-react';
+import { FileText, Clipboard, Download, CheckCircle, BookOpen } from 'lucide-react';
 import TableOfContents from './TableOfContents';
 
 interface DocPreviewProps {
@@ -11,6 +12,8 @@ interface DocPreviewProps {
   onSelectSection: (id: string) => void;
   onUpdateToc: (newToc: TocSection[]) => void;
   onConfirmSection: () => void;
+  isLoading?: boolean;
+  streamingDraft?: string;
 }
 
 export default function DocPreview({
@@ -20,25 +23,28 @@ export default function DocPreview({
   onSelectSection,
   onUpdateToc,
   onConfirmSection,
+  isLoading = false,
+  streamingDraft = '',
 }: DocPreviewProps) {
   const [activeTab, setActiveTab] = useState<'toc' | 'draft' | 'full'>('toc');
   const [copied, setCopied] = useState(false);
 
-  // Auto-switch to 'draft' tab when a current section gets new written content
+  // Auto-switch to draft tab when content arrives or is streaming
   useEffect(() => {
-    if (currentSection && currentSection.content) {
+    if (currentSection && (currentSection.content || streamingDraft)) {
       setActiveTab('draft');
     }
-  }, [currentSection?.id, currentSection?.content]);
+  }, [currentSection?.id, currentSection?.content, streamingDraft]);
 
-  // Combine all completed sections into a single markdown wiki doc
+  const draftContent = streamingDraft || currentSection?.content || '';
+
   const getFullWikiContent = () => {
     if (toc.length === 0) return '*아직 도출된 위키 문서가 없습니다.*';
-    
-    return toc
-      .map((section, idx) => {
+
+    return getWritableSections(toc)
+      .map((section) => {
         const statusIcon = section.status === 'completed' ? '✅' : '📝';
-        const titleLine = `## ${idx + 1}. ${section.title} [${statusIcon}]\n\n`;
+        const titleLine = `## ${getSectionDisplayLabel(section, toc)} [${statusIcon}]\n\n`;
         const bodyContent = section.content || '*작성 대기 중인 섹션입니다. AI와 채팅을 통해 이 섹션을 채워 보세요.*';
         return titleLine + bodyContent;
       })
@@ -116,7 +122,7 @@ export default function DocPreview({
         <div className="flex gap-1 shrink-0">
           <button
             id="btn-copy-doc"
-            onClick={() => copyToClipboard(activeTab === 'full' ? getFullWikiContent() : (currentSection?.content || ''))}
+            onClick={() => copyToClipboard(activeTab === 'full' ? getFullWikiContent() : draftContent)}
             className="p-1.5 rounded hover:bg-natural-hover text-natural-text/60 hover:text-natural-title transition cursor-pointer"
             title="마크다운 복사"
           >
@@ -162,27 +168,38 @@ export default function DocPreview({
               <div className="prose prose-stone max-w-none text-natural-text text-xs leading-relaxed space-y-4">
                 <div className="flex items-center justify-between border-b border-natural-border/60 pb-2 mb-3">
                   <h2 className="text-sm font-bold text-natural-accent flex items-center gap-1.5 font-serif">
-                    <FileText className="w-4 h-4" /> {currentSection.title}
+                    <FileText className="w-4 h-4" /> {getSectionDisplayLabel(currentSection, toc)}
                   </h2>
                   <span className="text-[10px] font-mono text-natural-text/50 capitalize">
-                    진행 상태: {currentSection.status}
+                    {isLoading && streamingDraft ? '초안 작성 중...' : `진행 상태: ${currentSection.status}`}
                   </span>
                 </div>
-                
-                {currentSection.content ? (
+
+                {draftContent ? (
                   <div className="markdown-body bg-natural-bg/25 p-4 rounded-xl border border-natural-border/40 font-sans">
-                    <ReactMarkdown>{currentSection.content}</ReactMarkdown>
+                    <ReactMarkdown>{draftContent}</ReactMarkdown>
+                    {isLoading && streamingDraft && (
+                      <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" />
+                    )}
                   </div>
                 ) : (
                   <div className="p-8 text-center bg-natural-bg/10 border border-dashed border-natural-border rounded-xl">
                     <p className="text-natural-text/50 text-xs italic">
-                      AI와 인터뷰를 마친 뒤 집필을 시작하면<br />여기에 구체적이고 완성도 높은 섹션 초안이 작성됩니다.
+                      AI가 이 섹션의 초안을 작성하면<br />여기에 실시간으로 표시됩니다.
                     </p>
                   </div>
                 )}
 
-                {/* Confirm section bottom button */}
-                {currentSection.content && currentSection.status !== 'completed' && (
+                {currentSection.feedback && (
+                  <div className="bg-amber-50/60 border border-amber-100 rounded-xl p-4">
+                    <h3 className="text-[11px] font-bold text-amber-800 mb-2">AI 비평 (맥킨지 스타일)</h3>
+                    <p className="text-[11px] text-amber-900/80 whitespace-pre-line leading-relaxed">
+                      {currentSection.feedback}
+                    </p>
+                  </div>
+                )}
+
+                {draftContent && currentSection.status !== 'completed' && !isLoading && (
                   <div className="pt-4 flex justify-end">
                     <button
                       id="btn-confirm-section-preview"
@@ -214,7 +231,7 @@ export default function DocPreview({
                 📚 전체 기획 위키 문서 (전문)
               </h2>
               <span className="text-[10px] font-mono text-natural-text/50">
-                총 {toc.length}개 섹션
+                총 {getWritableSections(toc).length}개 집필 섹션
               </span>
             </div>
             

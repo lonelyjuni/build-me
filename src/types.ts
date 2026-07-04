@@ -4,6 +4,8 @@ export interface TocSection {
   status: 'pending' | 'writing' | 'reviewing' | 'completed';
   content: string; // 작성된 실제 본문 (마크다운)
   feedback: string; // 맥킨지 스타일의 비평 피드백
+  parentId?: string; // 상위 목차 ID (3.1 → 3)
+  isGroupHeader?: boolean; // 하위만 집필하는 그룹 헤더(3.) 여부
 }
 
 export interface ChatMessage {

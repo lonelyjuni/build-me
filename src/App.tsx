@@ -5,6 +5,13 @@ import TableOfContents from './components/TableOfContents';
 import ChatPanel from './components/ChatPanel';
 import DocPreview from './components/DocPreview';
 import { buildGemmaModelsFromApi, MODEL_API_MAP } from './modelCatalog';
+import {
+  mergeTocSections,
+  findNextWritableSection,
+  normalizeTocSections,
+  getSectionDisplayLabel,
+  getWritableSections,
+} from './tocUtils';
 import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight } from 'lucide-react';
 
 export default function App() {
@@ -168,7 +175,10 @@ export default function App() {
     
     if (savedSessions) {
       try {
-        const parsed = JSON.parse(savedSessions);
+        const parsed = JSON.parse(savedSessions).map((sess: BrainstormSession) => ({
+          ...sess,
+          toc: normalizeTocSections(sess.toc || []),
+        }));
         setSessions(parsed);
         if (savedActiveId && parsed.some((s: any) => s.id === savedActiveId)) {
           setActiveSessionId(savedActiveId);
@@ -386,16 +396,15 @@ export default function App() {
     data: any,
     modelMsg: ChatMessage
   ): BrainstormSession => {
-    let updatedToc = [...(data.suggestedToc || sess.toc)];
+    let updatedToc = mergeTocSections(sess.toc, data.suggestedToc);
     const targetSectionId = data.currentSectionId || sess.currentSectionId;
 
-    if (targetSectionId && (data.updatedContent || data.critique)) {
+    if (targetSectionId && data.updatedContent) {
       updatedToc = updatedToc.map((sec) => {
         if (sec.id === targetSectionId) {
           return {
             ...sec,
-            content: data.updatedContent !== undefined ? data.updatedContent : sec.content,
-            feedback: data.critique !== undefined ? data.critique : sec.feedback,
+            content: data.updatedContent,
             status: sec.status === 'pending' ? ('writing' as const) : sec.status,
           };
         }
@@ -403,18 +412,43 @@ export default function App() {
       });
     }
 
+    if (targetSectionId && data.critique) {
+      updatedToc = updatedToc.map((sec) => {
+        if (sec.id === targetSectionId) {
+          return {
+            ...sec,
+            feedback: data.critique,
+            status: 'reviewing' as const,
+          };
+        }
+        return sec;
+      });
+    }
+
+    let nextSectionId = data.currentSectionId || sess.currentSectionId;
+    if (!nextSectionId && (data.sessionStatus === 'writing' || sess.status === 'writing')) {
+      const firstWritable = findNextWritableSection(updatedToc);
+      if (firstWritable) nextSectionId = firstWritable.id;
+    }
+
     return {
       ...sess,
       history: [...sess.history, modelMsg],
       toc: updatedToc,
       status: data.sessionStatus || sess.status,
-      currentSectionId: data.currentSectionId || sess.currentSectionId,
+      currentSectionId: nextSectionId,
       updatedAt: new Date().toISOString(),
     };
   };
 
-  const buildSectionDraftPrompt = (section: TocSection) =>
-    `[자동 집필 시작] "${section.title}" 섹션 집필을 지금 시작해 주세요. currentSectionId는 "${section.id}"로 설정하고, updatedContent에 이 섹션의 전문적인 마크다운 초안을, critique에 맥킨지 스타일 비평을 반드시 함께 작성해 주세요. 하위 목차(1.1, 1.2 등)가 있다면 1.1부터 순서대로 집필하세요. reply에는 짧게 이 섹션 집필을 시작한다고 안내해 주세요.`;
+  const buildSectionDraftPrompt = (section: TocSection, toc: TocSection[]) =>
+    `[자동 집필 시작] "${getSectionDisplayLabel(section, toc)}" 섹션의 전문 마크다운 초안을 지금 작성해 주세요.
+- currentSectionId: "${section.id}"
+- updatedContent: 이 섹션의 완성된 초안 전문(마크다운, 충분한 분량)
+- critique: 맥킨지 스타일 비평 3~5줄
+- reply: 초안 작성 완료를 짧게 안내하고 피드백을 요청
+- suggestedToc는 보내지 마세요(목차 구조 변경 금지)
+- sessionStatus: "reviewing"`;
 
   const executeChatRound = async (session: BrainstormSession, text: string) => {
     setIsLoading(true);
@@ -502,9 +536,9 @@ export default function App() {
   };
 
   const triggerSectionDraft = async (session: BrainstormSession, section: TocSection) => {
-    if (isLoading || !section) return;
+    if (isLoading || !section || section.isGroupHeader) return;
     setMobileActiveTab('doc');
-    await executeChatRound(session, buildSectionDraftPrompt(section));
+    await executeChatRound(session, buildSectionDraftPrompt(section, session.toc));
   };
 
   // 4. Create new Brainstorming Session
@@ -569,7 +603,7 @@ export default function App() {
             ...sess,
             title: data.reply.includes('목차') || !data.suggestedToc ? sess.title : (data.suggestedToc[0]?.title || sess.title),
             history: [...sess.history, firstModelMsg],
-            toc: data.suggestedToc || sess.toc,
+            toc: normalizeTocSections(data.suggestedToc || sess.toc),
             status: data.sessionStatus || sess.status,
             currentSectionId: data.currentSectionId || sess.currentSectionId,
             updatedAt: new Date().toISOString()
@@ -622,8 +656,8 @@ export default function App() {
     const { data, nextSession } = result;
     const targetId = nextSession.currentSectionId;
     let targetSection = targetId ? nextSession.toc.find((s) => s.id === targetId) : null;
-    if (!targetSection && nextSession.toc.length > 0) {
-      targetSection = nextSession.toc.find((s) => s.status !== 'completed') || nextSession.toc[0];
+    if (!targetSection) {
+      targetSection = findNextWritableSection(nextSession.toc) || undefined;
     }
     const justGotToc = (data.suggestedToc?.length || 0) > 0 && activeSession.toc.length === 0;
     const startedWriting =
@@ -682,7 +716,7 @@ export default function App() {
       if (sess.id === activeSession.id) {
         return {
           ...sess,
-          toc: newToc,
+          toc: normalizeTocSections(newToc),
           updatedAt: new Date().toISOString()
         };
       }
@@ -702,13 +736,13 @@ export default function App() {
       sec.id === currentSecId ? { ...sec, status: 'completed' as const } : sec
     );
 
-    const nextSec = updatedToc.find((sec) => sec.status !== 'completed');
+    const nextSec = findNextWritableSection(updatedToc);
     const nextSecId = nextSec ? nextSec.id : null;
 
     const confirmAlert: ChatMessage = {
       id: `confirm_${Date.now()}`,
       role: 'system',
-      text: `[확정 및 저장] '${currentSection.title}' 섹션이 성공적으로 기획 위키에 영구 저장되었습니다.`,
+      text: `[확정 및 저장] '${getSectionDisplayLabel(currentSection, activeSession.toc)}' 섹션이 성공적으로 기획 위키에 영구 저장되었습니다.`,
       timestamp: new Date().toISOString(),
       type: 'system_alert',
     };
@@ -717,7 +751,7 @@ export default function App() {
       ? {
           id: `next_${Date.now()}`,
           role: 'system',
-          text: `[다음 단계 진입] 다음 섹션인 '${nextSec.title}' 집필을 시작합니다.`,
+          text: `[다음 단계 진입] 다음 섹션인 '${getSectionDisplayLabel(nextSec, updatedToc)}' 집필을 시작합니다.`,
           timestamp: new Date().toISOString(),
           type: 'system_alert',
         }
@@ -758,10 +792,10 @@ export default function App() {
       return;
     }
 
-    const fullText = activeSession.toc
-      .map((section, idx) => {
+    const fullText = getWritableSections(activeSession.toc)
+      .map((section) => {
         const statusIcon = section.status === 'completed' ? '✅' : '📝';
-        const titleLine = `## ${idx + 1}. ${section.title} [${statusIcon}]\n\n`;
+        const titleLine = `## ${getSectionDisplayLabel(section, activeSession.toc)} [${statusIcon}]\n\n`;
         const bodyContent = section.content || '*작성 대기 중인 섹션입니다. AI와 채팅을 통해 이 섹션을 채워 보세요.*';
         return titleLine + bodyContent;
       })
@@ -901,6 +935,12 @@ export default function App() {
                   onSelectSection={handleSelectSection}
                   onUpdateToc={handleUpdateToc}
                   onConfirmSection={handleConfirmSection}
+                  isLoading={isLoading}
+                  streamingDraft={
+                    isLoading && realTimeProgress.currentActiveField === 'updatedContent'
+                      ? realTimeProgress.updatedContent
+                      : ''
+                  }
                 />
               </div>
             </div>
