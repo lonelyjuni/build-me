@@ -48,3 +48,61 @@ export function buildModelChatText(reply?: string, critique?: string): string {
 
   return '';
 }
+
+/** JSON 파싱 실패 시 suggestedToc 배열만 추출 */
+export function extractSuggestedTocFromJsonBuffer(buffer: string): Array<Record<string, unknown>> | null {
+  const keyIdx = buffer.indexOf('"suggestedToc"');
+  if (keyIdx === -1) return null;
+
+  const arrayStart = buffer.indexOf('[', keyIdx);
+  if (arrayStart === -1) return null;
+
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let i = arrayStart; i < buffer.length; i++) {
+    const char = buffer[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (char === '\\') escaped = true;
+      else if (char === '"') inString = false;
+      continue;
+    }
+    if (char === '"') {
+      inString = true;
+      continue;
+    }
+    if (char === '[') depth++;
+    else if (char === ']') {
+      depth--;
+      if (depth === 0) {
+        try {
+          const parsed = JSON.parse(buffer.substring(arrayStart, i + 1));
+          return Array.isArray(parsed) && parsed.length > 0 ? parsed : null;
+        } catch {
+          return null;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+export function shouldRequestTocFromAi(data: {
+  reply?: string;
+  suggestedToc?: unknown[];
+  sessionStatus?: string;
+  updatedContent?: string;
+}): boolean {
+  if (data.suggestedToc?.length) return false;
+  const reply = data.reply || '';
+  return (
+    data.sessionStatus === 'writing' ||
+    !!data.updatedContent ||
+    /목차|1\.1|집필|작성을 시작|마크다운.*정리|표준 가이드/i.test(reply)
+  );
+}
+
+export const TOC_JSON_FOLLOWUP_PROMPT =
+  '[시스템] 방금 목차를 제안했지만 suggestedToc JSON이 비어 있습니다. 지금 반드시 suggestedToc 배열 전체(id, title, status 포함)를 JSON으로 보내 주세요. reply는 한 줄 안내만. sessionStatus는 "writing". 첫 소목차 id를 currentSectionId로 설정하세요.';

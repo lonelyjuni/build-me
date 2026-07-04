@@ -390,3 +390,46 @@ export function buildConfirmedContentMarkdown(toc: TocSection[]): string {
   }
   return blocks.join('\n').trim();
 }
+
+/** reply 본문에서 목차 번호·제목 추출 (suggestedToc 누락 시 폴백) */
+export function parseTocOutlineFromReply(reply: string): TocSection[] {
+  if (!reply?.trim()) return [];
+
+  const sections: TocSection[] = [];
+  const seen = new Set<string>();
+
+  const addSection = (num: string, rawTitle: string) => {
+    const title = rawTitle.trim().replace(/^['"「『]|['"」』]$/g, '').trim();
+    if (!title || seen.has(num)) return;
+    seen.add(num);
+    const id = `sec_${num.replace(/\./g, '_')}`;
+    const fullTitle = num.includes('.') ? `${num} ${title}` : `${num}. ${title}`;
+    sections.push({
+      id,
+      title: fullTitle,
+      status: 'pending',
+      content: '',
+      feedback: '',
+    });
+  };
+
+  const arrowMatch = reply.match(/\[([^\]]+->[^\]]+)\]/);
+  if (arrowMatch) {
+    arrowMatch[1].split(/\s*->\s*/).forEach((part, idx) => {
+      const cleaned = part.trim();
+      if (cleaned) addSection(`1.${idx + 1}`, cleaned);
+    });
+  }
+
+  for (const line of reply.split('\n')) {
+    const trimmed = line.trim();
+    const lineMatch = trimmed.match(/^(?:[-*•]\s*)?(\d+(?:\.\d+)?)\.?\s+(.+)$/);
+    if (lineMatch) addSection(lineMatch[1], lineMatch[2]);
+  }
+
+  for (const m of reply.matchAll(/['「『]?(\d+\.\d+)\s+([^'」』\n,.:;]+)['」』]?/g)) {
+    addSection(m[1], m[2]);
+  }
+
+  return sections;
+}

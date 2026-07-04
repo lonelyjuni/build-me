@@ -287,6 +287,8 @@ app.post("/api/chat", async (req, res) => {
 - 충분한 정보가 모이면 목차(TOC) 초안을 suggestedToc로 제안합니다.
 
 2단계: 목차(TOC) 제안 & 확정 - sessionStatus: 'writing'으로 전환
+- reply에서 목차를 말로만 제안하지 마세요. 반드시 suggestedToc JSON 배열에 동일한 목차를 넣으세요.
+- 목차를 제안하거나 집필을 시작한다고 말할 때는 suggestedToc, sessionStatus: "writing", currentSectionId(첫 소목차)를 함께 보내세요.
 - suggestedToc 형식 규칙 (반드시 준수):
   * 상위 섹션: "1. 프로젝트 개요", "2. 사용자 분석", "3. 핵심 기능" 형식 (번호. 제목)
   * 하위 섹션: "1.1 기획 배경", "1.2 MVP 범위", "3.1 기능A", "3.2 기능B" 형식 — 반드시 별도 항목으로 id를 부여

@@ -15,8 +15,9 @@ import {
   getChapterNumberForSection,
   buildChapterReviewMarkdown,
   buildConfirmedContentMarkdown,
+  parseTocOutlineFromReply,
 } from './tocUtils';
-import { sanitizeDraftContent, buildModelChatText } from './contentUtils';
+import { sanitizeDraftContent, buildModelChatText, extractSuggestedTocFromJsonBuffer, shouldRequestTocFromAi, TOC_JSON_FOLLOWUP_PROMPT } from './contentUtils';
 import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight } from 'lucide-react';
 
 export default function App() {
@@ -366,26 +367,54 @@ export default function App() {
     };
 
     const parseModelResponse = (text: string) => {
+      let data: any;
       try {
-        return cleanAndParseJson(text);
+        data = cleanAndParseJson(text);
       } catch (parseErr) {
-        const reply = extractJsonField(text, "reply");
-        const reasoning = extractJsonField(text, "reasoning");
+        const reply = extractJsonField(text, 'reply');
+        const reasoning = extractJsonField(text, 'reasoning');
         if (reply || reasoning) {
-          return {
-            reply: reply || "응답을 일부만 복구했습니다. 내용이 이상하면 다시 보내 주세요.",
+          data = {
+            reply: reply || '응답을 일부만 복구했습니다. 내용이 이상하면 다시 보내 주세요.',
             reasoning,
-            updatedContent: extractJsonField(text, "updatedContent"),
-            critique: extractJsonField(text, "critique"),
+            updatedContent: extractJsonField(text, 'updatedContent'),
+            critique: extractJsonField(text, 'critique'),
             sessionStatus: sessionState.status,
           };
+        } else {
+          throw new Error(
+            parseErr instanceof Error
+              ? `AI 응답 형식 오류: ${parseErr.message}`
+              : 'AI 응답 형식 오류'
+          );
         }
-        throw new Error(
-          parseErr instanceof Error
-            ? `AI 응답 형식 오류: ${parseErr.message}`
-            : "AI 응답 형식 오류"
-        );
       }
+
+      if (!data.suggestedToc?.length) {
+        const extracted = extractSuggestedTocFromJsonBuffer(text);
+        if (extracted?.length) {
+          data.suggestedToc = extracted;
+        }
+      }
+
+      if (!data.suggestedToc?.length && data.reply) {
+        const fromReply = parseTocOutlineFromReply(data.reply);
+        if (fromReply.length) {
+          data.suggestedToc = fromReply;
+        }
+      }
+
+      if (data.suggestedToc?.length) {
+        if (!data.sessionStatus || data.sessionStatus === 'interviewing') {
+          data.sessionStatus = 'writing';
+        }
+        if (!data.currentSectionId) {
+          const first = findNextWritableSection(normalizeTocSections(data.suggestedToc));
+          if (first) data.currentSectionId = first.id;
+        }
+      }
+
+      return data;
     };
 
     const data = parseModelResponse(fullJsonBuffer);
@@ -725,25 +754,29 @@ ${body}`;
     }
 
     const result = await executeChatRound(activeSession, text);
-    if (!result?.data || !result.nextSession) return;
+    if (!result?.nextSession) return;
 
-    const { data, nextSession } = result;
-    const targetId = nextSession.currentSectionId;
-    let targetSection = targetId ? nextSession.toc.find((s) => s.id === targetId) : null;
-    if (!targetSection) {
-      targetSection = findNextWritableSection(nextSession.toc) || undefined;
+    let session = result.nextSession;
+
+    if (activeSession.toc.length === 0 && session.toc.length === 0 && shouldRequestTocFromAi(result.data)) {
+      const followUp = await executeChatRound(session, TOC_JSON_FOLLOWUP_PROMPT);
+      if (followUp?.nextSession) session = followUp.nextSession;
     }
-    const justGotToc = (data.suggestedToc?.length || 0) > 0 && activeSession.toc.length === 0;
-    const startedWriting =
-      activeSession.status !== 'writing' && nextSession.status === 'writing';
+
+    const targetId = session.currentSectionId;
+    let targetSection = targetId ? session.toc.find((s) => s.id === targetId) : null;
+    if (!targetSection) {
+      targetSection = findNextWritableSection(session.toc) || undefined;
+    }
+    const justGotToc = activeSession.toc.length === 0 && session.toc.length > 0;
+    const startedWriting = activeSession.status !== 'writing' && session.status === 'writing';
     const needsAutoDraft =
       targetSection &&
       !targetSection.content &&
-      !data.updatedContent &&
       (justGotToc || startedWriting);
 
     if (needsAutoDraft && targetSection) {
-      await triggerSectionDraft(nextSession, targetSection);
+      await triggerSectionDraft(session, targetSection);
     }
   };
 

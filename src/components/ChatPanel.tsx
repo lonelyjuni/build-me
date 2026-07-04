@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
-import { Send, Sparkles, AlertCircle, RefreshCw, CheckSquare, Mic, MicOff, Brain } from 'lucide-react';
+import { Send, Sparkles, AlertCircle, RefreshCw, CheckSquare, Mic, MicOff, Brain, Clipboard, Check } from 'lucide-react';
 
 import { buildModelChatText } from '../contentUtils';
 
@@ -9,6 +9,14 @@ function formatResponseText(text: string): string {
   return text
     .replace(/\\n/g, '\n')
     .replace(/\/n/g, '\n');
+}
+
+function getFullMessageCopyText(msg: ChatMessage): string {
+  const parts = [formatResponseText(msg.text)];
+  if (msg.reasoning) {
+    parts.push('', '---', '[에이전트의 생각의 흐름]', formatResponseText(msg.reasoning));
+  }
+  return parts.join('\n').trim();
 }
 
 function StreamingModelMessage({
@@ -101,6 +109,7 @@ export default function ChatPanel({
   const [inputText, setInputText] = useState('');
   const [isListening, setIsListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
+  const [copiedMsgId, setCopiedMsgId] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
@@ -331,6 +340,16 @@ export default function ChatPanel({
     }
   };
 
+  const copyMessageText = async (msg: ChatMessage) => {
+    try {
+      await navigator.clipboard.writeText(getFullMessageCopyText(msg));
+      setCopiedMsgId(msg.id);
+      setTimeout(() => setCopiedMsgId((prev) => (prev === msg.id ? null : prev)), 1500);
+    } catch (err) {
+      console.error('Failed to copy message:', err);
+    }
+  };
+
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   };
@@ -547,9 +566,33 @@ export default function ChatPanel({
                     </div>
                   )}
 
-                  <span className={`block text-[8px] mt-1 text-right ${isUser ? 'text-white/80' : 'text-natural-text/50'} font-mono`}>
-                    {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
+                  <div
+                    className={`flex items-center justify-end gap-1 mt-1 ${
+                      isUser ? 'text-white/70' : 'text-natural-text/50'
+                    }`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => copyMessageText(msg)}
+                      className={`p-0.5 rounded shrink-0 opacity-50 hover:opacity-100 transition-opacity cursor-pointer ${
+                        isUser ? 'hover:bg-white/10' : 'hover:bg-natural-sidebar/60'
+                      }`}
+                      title="메시지 전문 복사"
+                      aria-label="메시지 전문 복사"
+                    >
+                      {copiedMsgId === msg.id ? (
+                        <Check className="w-3 h-3" />
+                      ) : (
+                        <Clipboard className="w-3 h-3" />
+                      )}
+                    </button>
+                    <span className="text-[8px] font-mono leading-none">
+                      {new Date(msg.timestamp).toLocaleTimeString([], {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                      })}
+                    </span>
+                  </div>
                 </div>
               </div>
             );
