@@ -10,12 +10,48 @@ interface TableOfContentsProps {
 }
 
 interface TocRow {
-  id: string; // unique row id
+  id: string;
   title: string;
+  displayNumber?: string;
+  displayTitle?: string;
   isSub: boolean;
   status: 'completed' | 'writing' | 'reviewing' | 'pending';
   originalSection: TocSection;
-  parentId?: string; // ID of the parent row
+  parentId?: string;
+}
+
+function stripLeadingNumber(title: string): string {
+  const cleaned = title.trim().replace(/^(\d+\.)+\d*\s+/, '').replace(/^\d+\.\s+/, '').trim();
+  return cleaned || title.trim();
+}
+
+function assignDisplayNumbers(rows: TocRow[]): TocRow[] {
+  let parentIndex = 0;
+  const parentNumById: Record<string, number> = {};
+  const subIndexByParent: Record<string, number> = {};
+
+  return rows.map((row) => {
+    let displayNumber = '';
+
+    if (!row.isSub) {
+      parentIndex++;
+      parentNumById[row.id] = parentIndex;
+      displayNumber = `${parentIndex}`;
+    } else if (row.parentId && parentNumById[row.parentId]) {
+      const parentNum = parentNumById[row.parentId];
+      subIndexByParent[row.parentId] = (subIndexByParent[row.parentId] || 0) + 1;
+      displayNumber = `${parentNum}.${subIndexByParent[row.parentId]}`;
+    } else {
+      parentIndex++;
+      displayNumber = `${parentIndex}`;
+    }
+
+    return {
+      ...row,
+      displayNumber,
+      displayTitle: stripLeadingNumber(row.title),
+    };
+  });
 }
 
 export default function TableOfContents({
@@ -103,6 +139,8 @@ export default function TableOfContents({
     }
   });
 
+  const numberedRows = assignDisplayNumbers(rows);
+
   const toggleCollapse = (parentId: string, e: React.MouseEvent) => {
     e.stopPropagation();
     setCollapsedParents(prev => ({
@@ -112,7 +150,7 @@ export default function TableOfContents({
   };
 
   const handleCollapseAll = () => {
-    const parentRows = rows.filter(r => !r.isSub);
+    const parentRows = numberedRows.filter(r => !r.isSub);
     const newCollapsed: Record<string, boolean> = {};
     parentRows.forEach(r => {
       newCollapsed[r.id] = true;
@@ -166,7 +204,7 @@ export default function TableOfContents({
           </div>
         ) : (
           (() => {
-            return rows.map((row) => {
+            return numberedRows.map((row) => {
               const isSub = row.isSub;
               const parentId = row.parentId;
               const isCollapsed = parentId ? collapsedParents[parentId] : false;
@@ -177,7 +215,7 @@ export default function TableOfContents({
               }
 
               const isFocus = row.originalSection.id === currentSectionId;
-              const hasChildren = rows.some(r => r.isSub && r.parentId === row.id);
+              const hasChildren = numberedRows.some(r => r.isSub && r.parentId === row.id);
               const isParentCollapsed = collapsedParents[row.id];
 
               return (
@@ -212,8 +250,11 @@ export default function TableOfContents({
                     )}
                     
                     <div className="flex flex-col min-w-0">
-                      <span className={`text-[10.5px] leading-tight break-all ${isSub ? 'text-natural-text/80' : 'font-bold text-natural-title'}`}>
-                        {row.title}
+                      <span className={`text-[10.5px] leading-tight break-words flex items-start gap-1.5 ${isSub ? 'text-natural-text/80' : 'font-bold text-natural-title'}`}>
+                        <span className="text-[9px] font-mono font-bold text-natural-accent shrink-0 pt-0.5">
+                          {row.displayNumber}.
+                        </span>
+                        <span className="min-w-0">{row.displayTitle || row.title}</span>
                       </span>
                     </div>
                   </div>
