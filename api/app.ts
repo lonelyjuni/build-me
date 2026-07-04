@@ -17,7 +17,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 let globalSettings = {
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   routingEnabled: true,
-  selectedModelId: "gemma-4-31b",
+  selectedModelId: "gemini-2.5-flash",
   adminPassword: "admin", // Default password to access config
 };
 
@@ -35,27 +35,62 @@ function getAiClient(): GoogleGenAI {
   return aiClient;
 }
 
-// Health check and models discovery
+async function fetchAvailableModels() {
+  const ai = getAiClient();
+  const pager = await ai.models.list();
+  const models: Array<{
+    id: string;
+    name: string;
+    description: string;
+    inputTokenLimit: number;
+    outputTokenLimit: number;
+    version?: string;
+  }> = [];
+
+  for await (const model of pager) {
+    const actions = (model as any).supportedGenerationMethods || model.supportedActions || [];
+    if (!actions.includes("generateContent")) continue;
+    const id = (model.name || "").replace(/^models\//, "");
+    models.push({
+      id,
+      name: model.displayName || id,
+      description: model.description || "",
+      inputTokenLimit: model.inputTokenLimit || 0,
+      outputTokenLimit: model.outputTokenLimit || 0,
+      version: model.version,
+    });
+  }
+
+  return models;
+}
+
+// Health check
 app.get("/api/health", async (req, res) => {
   try {
-    const ai = getAiClient();
-    const modelsResponse: any = await ai.models.list();
-    const modelsList = modelsResponse.models || [];
-    res.json({ 
-      status: "ok", 
+    const models = await fetchAvailableModels();
+    res.json({
+      status: "ok",
       time: new Date().toISOString(),
-      availableModels: modelsList.map((m: any) => ({
-        name: m.name,
-        displayName: m.displayName,
-        supportedGenerationMethods: m.supportedGenerationMethods
-      }))
+      modelCount: models.length,
+      availableModels: models,
     });
   } catch (err: any) {
-    res.json({ 
-      status: "ok", 
+    res.json({
+      status: "ok",
       time: new Date().toISOString(),
-      errorDiscovery: err.message || err.toString()
+      errorDiscovery: err.message || err.toString(),
+      availableModels: [],
     });
+  }
+});
+
+// List models available for text generation (from Gemini API)
+app.get("/api/models", async (req, res) => {
+  try {
+    const models = await fetchAvailableModels();
+    res.json({ models });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "Failed to fetch models from Gemini API" });
   }
 });
 
@@ -197,40 +232,37 @@ app.post("/api/chat", async (req, res) => {
       return msg;
     };
 
-    // Model selection and dynamic routing fallback chain (Preferred: Gemma 4 31B -> Gemma 4 26B)
-    let primaryModel = selectedModelId || globalSettings.selectedModelId;
-    let fallbackChain: string[] = [];
+    // Model selection and dynamic routing fallback chain
+    const primaryModel = selectedModelId || globalSettings.selectedModelId;
     const isRouting = routingEnabled !== undefined ? routingEnabled : globalSettings.routingEnabled;
 
-    if (isRouting) {
-      if (primaryModel === 'gemma-4-31b') {
-        fallbackChain = ['gemma-4-31b', 'gemma-4-26b'];
-      } else {
-        fallbackChain = ['gemma-4-26b', 'gemma-4-31b'];
-      }
-    } else {
-      fallbackChain = [primaryModel];
-    }
+    const buildFallbackChain = (primary: string): string[] => {
+      const fallbacks: Record<string, string> = {
+        "gemini-2.5-pro": "gemini-2.5-flash",
+        "gemini-2.5-flash": "gemini-2.0-flash-lite",
+        "gemini-2.0-flash": "gemini-2.0-flash-lite",
+      };
+      if (!isRouting) return [primary];
+      const secondary = fallbacks[primary];
+      return secondary && secondary !== primary ? [primary, secondary] : [primary];
+    };
+
+    const fallbackChain = buildFallbackChain(primaryModel);
 
     let responseStream: any = null;
     let actualModelUsed = '';
-    let actualApiModelUsed = 'gemini-2.5-flash';
+    let actualApiModelUsed = primaryModel;
     let contextTokens = 0;
+    let modelInputTokenLimit = 1048576;
     let lastError: any = null;
 
     for (const model of fallbackChain) {
       try {
         actualModelUsed = model;
-        let actualApiModel = model;
-        
-        // Map mock/simulated models to a real supported Gemini API model
-        if (model === 'gemma-4-31b' || model === 'gemma-4-26b') {
-          actualApiModel = 'gemini-2.5-flash';
-        }
-        
+        const actualApiModel = model;
         actualApiModelUsed = actualApiModel;
 
-        const isGemma = model.toLowerCase().includes('gemma');
+        const isGemma = model.toLowerCase().includes("gemma");
 
         // Adjust contents for Gemma models to include system instructions and schema instructions inside user message
         let modelContents = [...contents];
@@ -345,6 +377,15 @@ app.post("/api/chat", async (req, res) => {
           };
         }
 
+        try {
+          const modelInfo = await ai.models.get({ model: actualApiModel });
+          if (modelInfo.inputTokenLimit) {
+            modelInputTokenLimit = modelInfo.inputTokenLimit;
+          }
+        } catch (modelInfoErr) {
+          console.warn(`models.get failed for ${actualApiModel}:`, modelInfoErr);
+        }
+
         responseStream = await ai.models.generateContentStream({
           model: actualApiModel,
           contents: modelContents,
@@ -381,7 +422,7 @@ app.post("/api/chat", async (req, res) => {
     }
 
     // Get context limits based on the actual API model used
-    const actualModelLimit = actualApiModelUsed.includes('pro') ? 2000000 : 1000000;
+    const actualModelLimit = modelInputTokenLimit;
     const estimatedResponseTokens = Math.ceil(generatedText.length / 2.5);
     const finalContextTokens = Math.min(actualModelLimit, contextTokens + estimatedResponseTokens);
 

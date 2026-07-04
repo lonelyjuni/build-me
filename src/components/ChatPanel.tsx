@@ -272,10 +272,7 @@ export default function ChatPanel({
   // Pretty name for the model
   const getModelName = (id: string) => {
     if (!id) return "자동 대기 중...";
-    if (id === 'gemma-4-31b') return "Gemma 4 31B";
-    if (id === 'gemma-4-26b') return "Gemma 4 26B";
-    if (id === 'gemini-3.1-flash-lite') return "Gemini 3.1 Flash Lite";
-    return id;
+    return id.replace(/^models\//, "");
   };
 
   useEffect(() => {

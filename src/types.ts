@@ -24,11 +24,14 @@ export interface ModelConfig {
   id: string;
   name: string;
   description: string;
-  limit: number; // 일일 사용 제한 횟수 (RPD)
-  used: number;  // 현재 세션/하루 동안 사용한 횟수
-  fallbackId?: string; // 한도 도달 시 대체할 모델 ID
-  rpmLimit: number; // 분당 호출 한도 (RPM)
-  tpmLimit: string; // 분당 토큰 한도 (TPM)
+  inputTokenLimit?: number;
+  outputTokenLimit?: number;
+  version?: string;
+  used?: number; // 이번 브라우저 세션에서 사용한 횟수 (로컬 추적)
+  limit?: number; // deprecated: API에서 제공하지 않음
+  fallbackId?: string;
+  rpmLimit?: number;
+  tpmLimit?: string;
 }
 
 export interface ModelSettings {

@@ -34,31 +34,44 @@ export default function App() {
   const [adminApiKey, setAdminApiKey] = useState('');
   const [serverMaskedApiKey, setServerMaskedApiKey] = useState('');
   const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [isLoadingModels, setIsLoadingModels] = useState(false);
+  const [modelsLoadError, setModelsLoadError] = useState<string | null>(null);
 
   const [modelSettings, setModelSettings] = useState<ModelSettings>({
-    selectedModelId: 'gemma-4-31b',
+    selectedModelId: 'gemini-2.5-flash',
     routingEnabled: true,
-    models: [
-      {
-        id: 'gemma-4-31b',
-        name: 'Gemma 4 31B',
-        description: '구글 AI 스튜디오 최신 Gemma 31B 모델. 공식 무료 한도: 분당 15회 호출, 토큰 무제한, 일일 최대 1,500회 호출',
-        limit: 1500,
-        used: 12,
-        rpmLimit: 15,
-        tpmLimit: '무제한'
-      },
-      {
-        id: 'gemma-4-26b',
-        name: 'Gemma 4 26B',
-        description: '안정적인 응답 속도와 우수한 성능의 Gemma 26B 주력 모델. 공식 무료 한도: 분당 15회 호출, 토큰 무제한, 일일 최대 1,500회 호출',
-        limit: 1500,
-        used: 5,
-        rpmLimit: 15,
-        tpmLimit: '무제한'
-      }
-    ]
+    models: []
   });
+
+  const loadModelsFromApi = async () => {
+    setIsLoadingModels(true);
+    setModelsLoadError(null);
+    try {
+      const res = await fetch('/api/models');
+      if (!res.ok) {
+        throw new Error(`모델 목록 조회 실패 (${res.status})`);
+      }
+      const data = await res.json();
+      const apiModels: ModelConfig[] = (data.models || []).map((m: ModelConfig) => ({
+        ...m,
+        used: 0,
+      }));
+
+      setModelSettings(prev => {
+        const hasSelected = apiModels.some(m => m.id === prev.selectedModelId);
+        return {
+          ...prev,
+          models: apiModels,
+          selectedModelId: hasSelected ? prev.selectedModelId : (apiModels[0]?.id || prev.selectedModelId),
+        };
+      });
+    } catch (err: any) {
+      console.error('Failed to load models from API:', err);
+      setModelsLoadError(err.message || 'API에서 모델 목록을 불러오지 못했습니다.');
+    } finally {
+      setIsLoadingModels(false);
+    }
+  };
 
   // Load configuration from server on mount
   useEffect(() => {
@@ -69,7 +82,7 @@ export default function App() {
           const data = await res.json();
           setModelSettings(prev => ({
             ...prev,
-            selectedModelId: data.selectedModelId,
+            selectedModelId: data.selectedModelId || prev.selectedModelId,
             routingEnabled: data.routingEnabled,
           }));
           setServerMaskedApiKey(data.maskedApiKey || '');
@@ -79,6 +92,7 @@ export default function App() {
       }
     };
     loadServerConfig();
+    loadModelsFromApi();
   }, []);
 
   const handleAdminLogin = async (e: React.FormEvent) => {
@@ -501,7 +515,7 @@ export default function App() {
         setModelSettings(prev => {
           const updatedModels = prev.models.map(m => {
             if (m.id === data.modelUsed) {
-              return { ...m, used: Math.min(m.limit, m.used + 1) };
+              return { ...m, used: (m.used || 0) + 1 };
             }
             return m;
           });
@@ -1027,9 +1041,32 @@ export default function App() {
 
                 {/* Models List */}
                 <div className="flex flex-col gap-2.5">
-                  <h3 className="text-[9.5px] font-bold uppercase tracking-wider text-natural-text/50 font-mono">가용 구글 모델 및 일일 할당량</h3>
+                  <div className="flex items-center justify-between gap-2">
+                    <h3 className="text-[9.5px] font-bold uppercase tracking-wider text-natural-text/50 font-mono">API 지원 모델 (generateContent)</h3>
+                    <button
+                      type="button"
+                      onClick={loadModelsFromApi}
+                      disabled={isLoadingModels}
+                      className="text-[9.5px] font-semibold text-natural-accent hover:underline flex items-center gap-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <RefreshCw className={`w-3 h-3 ${isLoadingModels ? 'animate-spin' : ''}`} />
+                      새로고침
+                    </button>
+                  </div>
+
+                  {isLoadingModels && (
+                    <p className="text-[10px] text-natural-text/60 text-center py-4">Gemini API에서 모델 목록을 불러오는 중...</p>
+                  )}
+
+                  {modelsLoadError && (
+                    <p className="text-[10px] text-rose-500 text-center py-2">{modelsLoadError}</p>
+                  )}
+
+                  {!isLoadingModels && modelSettings.models.length === 0 && !modelsLoadError && (
+                    <p className="text-[10px] text-natural-text/60 text-center py-4">사용 가능한 모델이 없습니다. API 키를 확인해 주세요.</p>
+                  )}
+
                   {modelSettings.models.map((model) => {
-                    const percent = Math.min(100, (model.used / model.limit) * 100);
                     const isSelected = modelSettings.selectedModelId === model.id;
                     
                     return (
@@ -1048,34 +1085,28 @@ export default function App() {
                               type="radio"
                               name="selectedModel"
                               checked={isSelected}
-                              onChange={() => {}} // handled by div click
+                              onChange={() => {}}
                               className="text-natural-accent focus:ring-natural-accent shrink-0"
                             />
                             <span className="text-[11px] font-bold text-natural-title truncate">{model.name}</span>
                           </div>
                           <span className="text-[9px] text-natural-text/60 font-mono font-semibold shrink-0">
-                            일일 잔여: {model.limit - model.used} / {model.limit} RPD
+                            이번 세션 {model.used || 0}회
                           </span>
                         </div>
 
-                        <p className="text-[10px] text-natural-text/75 leading-normal">
-                          {model.description}
-                        </p>
+                        <p className="text-[9px] text-natural-text/50 font-mono truncate">{model.id}</p>
+
+                        {model.description && (
+                          <p className="text-[10px] text-natural-text/75 leading-normal line-clamp-2">
+                            {model.description}
+                          </p>
+                        )}
 
                         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] font-mono text-natural-text/60 bg-natural-sidebar/40 px-2.5 py-1 rounded-lg border border-natural-border/30">
-                          <span>⏱️ <b>RPM:</b> {model.rpmLimit} / 분</span>
-                          <span>📦 <b>TPM:</b> {model.tpmLimit}</span>
-                          <span>📅 <b>RPD (일일한도):</b> {model.limit}회</span>
-                        </div>
-
-                        {/* Quota Progress Bar */}
-                        <div className="w-full bg-natural-border/60 rounded-full h-1 overflow-hidden">
-                          <div 
-                            className={`h-full rounded-full transition-all duration-500 ${
-                              percent > 85 ? 'bg-rose-500' : percent > 50 ? 'bg-amber-500' : 'bg-natural-accent'
-                            }`}
-                            style={{ width: `${percent}%` }}
-                          />
+                          <span>📥 <b>입력:</b> {(model.inputTokenLimit || 0).toLocaleString()} tokens</span>
+                          <span>📤 <b>출력:</b> {(model.outputTokenLimit || 0).toLocaleString()} tokens</span>
+                          {model.version && <span>🏷️ <b>버전:</b> {model.version}</span>}
                         </div>
                       </div>
                     );
@@ -1097,7 +1128,7 @@ export default function App() {
                   className="text-[9.5px] font-semibold text-rose-600 hover:text-rose-700 hover:underline flex items-center gap-1 cursor-pointer"
                 >
                   <RefreshCw className="w-3 h-3" />
-                  사용 한도 로그 초기화
+                  세션 사용 횟수 초기화
                 </button>
                 <div className="flex gap-1.5">
                   <button
