@@ -1,9 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { BrainstormSession, ChatMessage, TocSection, ModelSettings, ModelConfig } from './types';
 import Sidebar from './components/Sidebar';
 import TableOfContents from './components/TableOfContents';
 import ChatPanel from './components/ChatPanel';
 import DocPreview from './components/DocPreview';
+import ResizableSplitPane from './components/ResizableSplitPane';
 import { buildGemmaModelsFromApi, MODEL_API_MAP, GEMMA_MODEL_DEFINITIONS } from './modelCatalog';
 import {
   findNextWritableSection,
@@ -19,6 +20,7 @@ import {
   filterDocumentTocSections,
   isInterviewQuestionToc,
   repairTocSections,
+  userRequestsTocUpdate,
 } from './tocUtils';
 import { sanitizeDraftContent, buildModelChatText, extractSuggestedTocFromJsonBuffer, shouldRequestTocFromAi, TOC_JSON_FOLLOWUP_PROMPT } from './contentUtils';
 import { clientDevLog } from './devLogger';
@@ -46,6 +48,57 @@ export default function App() {
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [mobileActiveTab, setMobileActiveTab] = useState<'chat' | 'doc'>('chat');
   const [isSidebarOpenOnMobile, setIsSidebarOpenOnMobile] = useState(false);
+  const [isDesktopSidebarExpanded, setIsDesktopSidebarExpanded] = useState(false);
+  const sidebarHoverRef = useRef(false);
+  const chatHoverRef = useRef(false);
+  const sidebarCollapseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const collapseSidebarUnlessHovered = useCallback(() => {
+    if (window.innerWidth < 768) return;
+    if (sidebarHoverRef.current) return;
+    if (sidebarCollapseTimerRef.current) clearTimeout(sidebarCollapseTimerRef.current);
+    setIsDesktopSidebarExpanded(false);
+  }, []);
+
+  const chatPanelInteractionProps = {
+    onMouseEnter: () => {
+      chatHoverRef.current = true;
+      collapseSidebarUnlessHovered();
+    },
+    onMouseLeave: () => {
+      chatHoverRef.current = false;
+    },
+    onFocusCapture: () => {
+      chatHoverRef.current = true;
+      collapseSidebarUnlessHovered();
+    },
+  };
+
+  const scheduleSidebarCollapse = useCallback(() => {
+    if (sidebarCollapseTimerRef.current) clearTimeout(sidebarCollapseTimerRef.current);
+    sidebarCollapseTimerRef.current = setTimeout(() => {
+      if (!sidebarHoverRef.current) setIsDesktopSidebarExpanded(false);
+    }, 350);
+  }, []);
+
+  useEffect(() => {
+    const onMouseMove = (e: MouseEvent) => {
+      if (window.innerWidth < 768) return;
+      if (e.clientX <= 14) {
+        if (sidebarCollapseTimerRef.current) clearTimeout(sidebarCollapseTimerRef.current);
+        setIsDesktopSidebarExpanded(true);
+      } else if (chatHoverRef.current && !sidebarHoverRef.current) {
+        setIsDesktopSidebarExpanded(false);
+      } else if (!sidebarHoverRef.current && !chatHoverRef.current && e.clientX > 340) {
+        scheduleSidebarCollapse();
+      }
+    };
+    window.addEventListener('mousemove', onMouseMove);
+    return () => {
+      window.removeEventListener('mousemove', onMouseMove);
+      if (sidebarCollapseTimerRef.current) clearTimeout(sidebarCollapseTimerRef.current);
+    };
+  }, [scheduleSidebarCollapse]);
 
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -110,10 +163,12 @@ export default function App() {
       const data = await res.json();
       const models: ModelConfig[] = (data.models || [])
         .filter((m: { id: string }) => m.id === 'composer-2.5')
-        .map((m: { id: string; name?: string; description?: string }) => ({
+        .map((m: { id: string; name?: string; description?: string; inputTokenLimit?: number; outputTokenLimit?: number }) => ({
           id: m.id,
           name: m.name || 'Composer 2.5',
           description: m.description || 'Cursor Proxy',
+          inputTokenLimit: m.inputTokenLimit ?? 200_000,
+          outputTokenLimit: m.outputTokenLimit ?? 0,
           used: 0,
         }));
 
@@ -604,10 +659,15 @@ export default function App() {
         }
       }
 
-      if (!data.suggestedToc?.length && data.reply && sessionState.toc.length === 0) {
-        const fromReply = parseTocOutlineFromReply(data.reply);
-        if (fromReply.length) {
-          data.suggestedToc = fromReply;
+      if (!data.suggestedToc?.length && data.reply) {
+        const wantsTocUpdate =
+          sessionState.toc.length === 0 ||
+          userRequestsTocUpdate(userMessage, data.reply);
+        if (wantsTocUpdate) {
+          const fromReply = parseTocOutlineFromReply(data.reply);
+          if (fromReply.length) {
+            data.suggestedToc = fromReply;
+          }
         }
       }
 
@@ -732,8 +792,8 @@ export default function App() {
     return `[대목차 검토] ${chapterNum}번 대목차의 모든 소목차 확정이 완료되었습니다.
 아래 확정 집필 본문만 검토해 주세요. 중복·누락·흐름·모순·용어 일관성을 점검합니다.
 
-- reply: 검토 요약 및 개선 제안 (대화창)
-- critique: 맥킨지 스타일 상세 비평 (대화창)
+- reply: 검토 요약 및 개선 제안 (자연스러운 대화체)
+- critique: 비워 두세요("")
 - updatedContent 보내지 마세요
 - suggestedToc 보내지 마세요
 - sessionStatus: "reviewing"
@@ -747,7 +807,7 @@ ${body}`;
     return `[전체 기획서 검토] 모든 섹션 집필이 완료되었습니다.
 아래 확정 본문 전체를 통독하여 전체 일관성·중복·흐름·모순을 검토해 주세요.
 
-- reply / critique에만 검토 결과 작성
+- reply에만 검토 결과를 자연스럽게 작성
 - updatedContent, suggestedToc 보내지 마세요
 - sessionStatus: "completed"
 
@@ -775,7 +835,7 @@ ${body}`;
     `[자동 집필 시작] "${getSectionDisplayLabel(section, toc)}" 섹션 초안을 작성해 주세요.
 - updatedContent: 기획서 본문만 (설명·비평·인사 없이 순수 마크다운 본문)
 - reply: 왜 이렇게 썼는지, 구성 의도, 핵심 포인트 설명 (대화창용)
-- critique: 맥킨지 스타일 비평 (대화창용)
+- critique: 보통 비움("")
 - currentSectionId: "${section.id}"
 - suggestedToc 보내지 마세요
 - sessionStatus: "reviewing"`;
@@ -1034,7 +1094,15 @@ ${body}`;
 
     let session = result.nextSession;
 
-    if (activeSession.toc.length === 0 && session.toc.length === 0 && shouldRequestTocFromAi(result.data)) {
+    const needsTocFollowup =
+      (activeSession.toc.length === 0 &&
+        session.toc.length === 0 &&
+        shouldRequestTocFromAi(result.data)) ||
+      (userRequestsTocUpdate(trimmedText, result.data.reply) &&
+        session.toc.length === activeSession.toc.length &&
+        !result.data.suggestedToc?.length);
+
+    if (needsTocFollowup) {
       const followUp = await executeChatRound(session, TOC_JSON_FOLLOWUP_PROMPT);
       if (followUp?.nextSession) session = followUp.nextSession;
     }
@@ -1217,9 +1285,35 @@ ${body}`;
 
   return (
     <div className="flex flex-col md:flex-row h-screen bg-natural-bg text-natural-text font-sans antialiased overflow-hidden" id="app-root-container">
+      {/* 좌측 끝 호버 시 사이드바 펼침 (데스크톱) */}
+      {!isDesktopSidebarExpanded && (
+        <div
+          className="hidden md:block fixed left-0 top-0 bottom-0 w-3 z-40"
+          aria-hidden
+          onMouseEnter={() => setIsDesktopSidebarExpanded(true)}
+        />
+      )}
+
       {/* Sidebar for navigation */}
-      <div className={`${activeSessionId && !isSidebarOpenOnMobile ? 'hidden' : 'flex'} md:flex shrink-0 w-full md:w-80 h-full`} id="sidebar-wrapper-responsive">
+      <div
+        className={`${
+          activeSessionId && !isSidebarOpenOnMobile ? 'hidden' : 'flex'
+        } md:flex shrink-0 h-full transition-[width] duration-200 ease-out overflow-hidden ${
+          isDesktopSidebarExpanded ? 'md:w-80' : 'md:w-14'
+        } w-full`}
+        id="sidebar-wrapper-responsive"
+        onMouseEnter={() => {
+          sidebarHoverRef.current = true;
+          if (sidebarCollapseTimerRef.current) clearTimeout(sidebarCollapseTimerRef.current);
+          setIsDesktopSidebarExpanded(true);
+        }}
+        onMouseLeave={() => {
+          sidebarHoverRef.current = false;
+          scheduleSidebarCollapse();
+        }}
+      >
         <Sidebar
+          collapsed={!isDesktopSidebarExpanded}
           sessions={sessions}
           activeSessionId={activeSessionId}
           onSelectSession={(id) => {
@@ -1313,26 +1407,68 @@ ${body}`;
               </button>
             </div>
 
-            <div className="flex-1 grid grid-cols-1 lg:grid-cols-12 gap-4 p-4 overflow-hidden h-full" id="workspace-grid">
-              {/* Left Area: Conversation Chat (6 cols on lg) */}
-              <div className={`lg:col-span-6 flex-col gap-4 h-full overflow-hidden ${mobileActiveTab === 'chat' ? 'flex' : 'hidden lg:flex'}`} id="left-workspace-panel">
-                {/* Chat Panel */}
-                <div className="flex-1 min-h-0" id="chat-panel-wrapper">
-                  <ChatPanel
-                    history={activeSession.history}
-                    onSendMessage={handleSendMessage}
-                    isLoading={isLoading}
-                    status={activeSession.status}
-                    currentSectionTitle={currentSection?.title || null}
-                    onConfirmSection={handleConfirmSection}
-                    onDownloadWiki={handleDownloadWiki}
-                    realTimeProgress={realTimeProgress}
-                  />
-                </div>
+            <div className="flex-1 flex flex-col min-h-0 p-4 overflow-hidden h-full" id="workspace-grid">
+              {/* 데스크톱: 드래그로 너비 조절 / 모바일: 탭 전환 */}
+              <div className="hidden lg:flex flex-1 min-h-0">
+                <ResizableSplitPane
+                  storageKey="buildme_chat_panel_percent"
+                  left={
+                    <div
+                      className="flex flex-col h-full min-h-0 pr-2"
+                      id="chat-panel-hover-zone"
+                      {...chatPanelInteractionProps}
+                    >
+                      <ChatPanel
+                        history={activeSession.history}
+                        onSendMessage={handleSendMessage}
+                        isLoading={isLoading}
+                        status={activeSession.status}
+                        currentSectionTitle={currentSection?.title || null}
+                        onConfirmSection={handleConfirmSection}
+                        onDownloadWiki={handleDownloadWiki}
+                        realTimeProgress={realTimeProgress}
+                      />
+                    </div>
+                  }
+                  right={
+                    <div className="flex flex-col h-full min-h-0 pl-2">
+                      <DocPreview
+                        currentSection={currentSection}
+                        toc={activeSession.toc}
+                        currentSectionId={activeSession.currentSectionId}
+                        onSelectSection={handleSelectSection}
+                        onUpdateToc={handleUpdateToc}
+                        onConfirmSection={handleConfirmSection}
+                        isLoading={isLoading}
+                        streamingDraft={
+                          isLoading && realTimeProgress.currentActiveField === 'updatedContent'
+                            ? sanitizeDraftContent(realTimeProgress.updatedContent)
+                            : ''
+                        }
+                      />
+                    </div>
+                  }
+                />
               </div>
 
-              {/* Right Area: Document Preview & Table of Contents (6 cols on lg) */}
-              <div className={`lg:col-span-6 flex-col h-full overflow-hidden ${mobileActiveTab === 'doc' ? 'flex' : 'hidden lg:flex'}`} id="right-workspace-panel">
+              <div
+                className={`lg:hidden flex-1 min-h-0 flex flex-col ${mobileActiveTab === 'chat' ? 'flex' : 'hidden'}`}
+                id="chat-panel-hover-zone-mobile"
+                {...chatPanelInteractionProps}
+              >
+                <ChatPanel
+                  history={activeSession.history}
+                  onSendMessage={handleSendMessage}
+                  isLoading={isLoading}
+                  status={activeSession.status}
+                  currentSectionTitle={currentSection?.title || null}
+                  onConfirmSection={handleConfirmSection}
+                  onDownloadWiki={handleDownloadWiki}
+                  realTimeProgress={realTimeProgress}
+                />
+              </div>
+
+              <div className={`lg:hidden flex-1 min-h-0 flex flex-col ${mobileActiveTab === 'doc' ? 'flex' : 'hidden'}`}>
                 <DocPreview
                   currentSection={currentSection}
                   toc={activeSession.toc}
@@ -1361,7 +1497,7 @@ ${body}`;
               아이디어 빌더, BuildMe
             </h1>
             <p className="text-xs text-natural-text/80 mb-8 max-w-md leading-relaxed">
-              머릿속에 떠다니는 생각과 투박한 사업 비전을 던져주세요. 날카로운 인터뷰 질문과 실시간 맥킨지 비평을 나누며 견고한 위키 기획서로 함께 조각합니다.
+              머릿속에 떠다니는 생각과 투박한 사업 비전을 던져주세요. 날카로운 인터뷰 질문과 솔직한 피드백을 나누며 견고한 위키 기획서로 함께 조각합니다.
             </p>
 
             <div className="w-full bg-natural-card border border-natural-border p-5 rounded-2xl shadow-md mb-6 text-left" id="welcome-input-box">
@@ -1814,6 +1950,9 @@ ${body}`;
                         {model.description && (
                           <p className="text-[10px] text-natural-text/75 leading-normal line-clamp-2">{model.description}</p>
                         )}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] font-mono text-natural-text/60 bg-natural-sidebar/40 px-2.5 py-1 rounded-lg border border-natural-border/30">
+                          <span>📥 <b>컨텍스트:</b> {(model.inputTokenLimit || 0).toLocaleString()} tokens</span>
+                        </div>
                       </div>
                     );
                   })}

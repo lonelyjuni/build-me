@@ -5,6 +5,9 @@ export const CURSOR_PROXY_DEFAULT_BASE_URL =
 
 export const CURSOR_PROXY_DEFAULT_MODEL = "composer-2.5";
 
+/** Composer 2.5 공식 컨텍스트 윈도우 (Kimi K2.5 기반, Cursor 문서 기준 200K) */
+export const CURSOR_COMPOSER_25_CONTEXT_LIMIT = 200_000;
+
 /** composer-2.5-fast 등 Fast 변형은 사용 금지 */
 const BLOCKED_MODEL_PATTERNS = [/composer-2\.5-fast/i, /-fast$/i];
 
@@ -30,6 +33,8 @@ export interface CursorProxyModelInfo {
   name: string;
   description: string;
   ownedBy?: string;
+  inputTokenLimit: number;
+  outputTokenLimit?: number;
 }
 
 export async function fetchCursorProxyHealth(baseUrl: string, apiKey: string) {
@@ -67,8 +72,9 @@ export async function fetchCursorProxyModels(
     {
       id: CURSOR_PROXY_DEFAULT_MODEL,
       name: "Composer 2.5",
-      description: `Cursor Proxy · ${composer.owned_by || "cursor"}`,
+      description: `Cursor Proxy · ${composer.owned_by || "cursor"} · 컨텍스트 ${CURSOR_COMPOSER_25_CONTEXT_LIMIT.toLocaleString()} tokens`,
       ownedBy: composer.owned_by,
+      inputTokenLimit: CURSOR_COMPOSER_25_CONTEXT_LIMIT,
     },
   ];
 }
@@ -79,16 +85,16 @@ You MUST reply with a single, valid JSON object. No markdown code fences. Return
 
 Field rules:
 - "updatedContent": PURE section body markdown ONLY.
-- "reply": ALL conversational text in Korean.
-- "critique": McKinsey-style critique for chat only.
+- "reply": ALL conversational text in natural Korean. Markdown **bold** OK.
+- "critique": Usually "" — no formatted critique templates or 【】sections.
 
 JSON Schema:
 {
   "reasoning": "Internal thinking in Korean",
-  "reply": "Chat message in Korean",
+  "reply": "Natural Korean chat message",
   "suggestedToc": [{ "id": "string", "title": "string", "status": "pending|writing|reviewing|completed", "content": "", "feedback": "" }],
   "updatedContent": "PURE markdown body for current section only",
-  "critique": "McKinsey critique for chat only",
+  "critique": "",
   "sessionStatus": "interviewing|writing|reviewing|completed",
   "currentSectionId": "string"
 }`;

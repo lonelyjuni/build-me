@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { ChatMessage } from '../types';
 import { Send, Sparkles, AlertCircle, RefreshCw, CheckSquare, Mic, MicOff, Brain, Clipboard, Check, Loader2 } from 'lucide-react';
 
+import ReactMarkdown from 'react-markdown';
+
 import { buildModelChatText } from '../contentUtils';
 
 function formatResponseText(text: string): string {
@@ -9,6 +11,16 @@ function formatResponseText(text: string): string {
   return text
     .replace(/\\n/g, '\n')
     .replace(/\/n/g, '\n');
+}
+
+function ChatMarkdown({ text, className = '' }: { text: string; className?: string }) {
+  const normalized = formatResponseText(text);
+  if (!normalized) return null;
+  return (
+    <div className={`chat-markdown break-words ${className}`}>
+      <ReactMarkdown>{normalized}</ReactMarkdown>
+    </div>
+  );
 }
 
 function getFullMessageCopyText(msg: ChatMessage): string {
@@ -36,120 +48,75 @@ function StreamingModelMessage({
   const reply = progress?.reply || '';
   const critique = progress?.critique || '';
   const updatedContent = progress?.updatedContent || '';
-  const activeField = progress?.currentActiveField || 'none';
   const streamPhase = progress?.streamPhase || (reasoning ? 'reasoning' : 'connecting');
-  const streamLabel = progress?.streamLabel;
   const chatText = buildModelChatText(reply, critique);
   const displayReply = formatResponseText(chatText);
-  const isReplyStreaming = activeField === 'reply' || activeField === 'critique';
-  const isReasoningStreaming = streamPhase === 'reasoning' || streamPhase === 'connecting';
-  const isDraftStreaming = streamPhase === 'draft' || activeField === 'updatedContent';
-  const draftPreview = formatResponseText(updatedContent).slice(0, 600);
+  const isReasoningStreaming = progress?.currentActiveField === 'reasoning';
+  const isReplyStreaming =
+    progress?.currentActiveField === 'reply' || progress?.currentActiveField === 'critique';
+  const isDrafting =
+    streamPhase === 'draft' || progress?.currentActiveField === 'updatedContent';
+  const hasVisibleContent = Boolean(displayReply || updatedContent.trim() || reasoning.trim());
 
-  const steps: Array<{ id: string; label: string; active: boolean; done: boolean }> = [
-    {
-      id: 'connecting',
-      label: '연결',
-      active: streamPhase === 'connecting',
-      done: streamPhase !== 'connecting',
-    },
-    {
-      id: 'reasoning',
-      label: '추론',
-      active: streamPhase === 'reasoning',
-      done: ['draft', 'reply', 'critique'].includes(streamPhase),
-    },
-    {
-      id: 'draft',
-      label: '초안',
-      active: streamPhase === 'draft',
-      done: ['reply', 'critique'].includes(streamPhase) && !!displayReply,
-    },
-    {
-      id: 'reply',
-      label: '답변',
-      active: streamPhase === 'reply' || streamPhase === 'critique',
-      done: false,
-    },
-  ];
+  const statusText = (() => {
+    if (displayReply || reasoning.trim()) return '';
+    if (isDrafting && updatedContent.trim()) return '초안 작성 중…';
+    return '응답 작성 중…';
+  })();
 
   return (
     <div className="flex justify-start w-full animate-fadeIn" id="chat-streaming-message">
       <div className="max-w-[85%] rounded-2xl rounded-bl-none px-3 py-2 md:py-2.5 text-xs leading-relaxed shadow-sm bg-natural-card border border-natural-accent/25 text-natural-text">
-        {streamLabel && (
-          <p className="text-[9px] font-semibold text-natural-accent mb-1.5 flex items-center gap-1">
-            <RefreshCw className="w-3 h-3 animate-spin shrink-0" />
-            {streamLabel}
+        {statusText && (
+          <p className="text-[10px] text-natural-text/60 flex items-center gap-1.5 mb-1">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-natural-accent shrink-0" />
+            <span>{statusText}</span>
           </p>
         )}
 
-        <div className="flex flex-wrap items-center gap-1 mb-2">
-          {steps.map((step, idx) => (
-            <React.Fragment key={step.id}>
-              <span
-                className={`text-[8.5px] font-bold px-1.5 py-0.5 rounded-full border ${
-                  step.active
-                    ? 'bg-natural-accent/15 border-natural-accent/40 text-natural-accent'
-                    : step.done
-                      ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                      : 'bg-natural-bg border-natural-border text-natural-text/40'
-                }`}
-              >
-                {step.label}
-                {step.active && '…'}
-              </span>
-              {idx < steps.length - 1 && <span className="text-natural-text/25 text-[8px]">→</span>}
-            </React.Fragment>
-          ))}
-        </div>
-
-        {(reasoning || isReasoningStreaming) && (
-          <details open={isReasoningStreaming || reasoning.length > 0} className="mb-1.5">
-            <summary className="flex items-center gap-1 text-[9px] text-natural-text/60 hover:text-natural-accent font-semibold cursor-pointer list-none select-none">
-              <Brain className="w-3 h-3 text-natural-accent shrink-0" />
-              <span>
-                {reasoning
-                  ? isReasoningStreaming
-                    ? '생각하는 중...'
-                    : '에이전트의 생각의 흐름'
-                  : '추론 준비 중...'}
-              </span>
-              {isReasoningStreaming && <RefreshCw className="w-3 h-3 animate-spin text-natural-accent ml-1" />}
-            </summary>
-            <div className="mt-1.5 p-2 rounded-lg bg-natural-bg/50 text-[10px] text-natural-text/80 font-sans border border-natural-border/30 whitespace-pre-line leading-relaxed max-h-[140px] overflow-y-auto scrollbar-thin">
-              {reasoning ? formatResponseText(reasoning) : '모델이 섹션 구성과 내용을 구상하고 있습니다...'}
-            </div>
-          </details>
-        )}
-
-        {isDraftStreaming && (
-          <div className="mb-1.5 p-2 rounded-lg bg-emerald-50/80 border border-emerald-100 text-[10px] text-emerald-900">
-            <div className="flex items-center gap-1.5 font-semibold mb-1">
-              <RefreshCw className="w-3 h-3 animate-spin text-emerald-600 shrink-0" />
-              <span>집필 초안 본문 작성 중… (오른쪽 집필 초안 탭에도 실시간 반영)</span>
-            </div>
-            {draftPreview && (
-              <p className="whitespace-pre-line text-emerald-950/80 leading-relaxed max-h-24 overflow-y-auto scrollbar-thin">
-                {draftPreview}
-                <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-emerald-600 animate-pulse" aria-hidden />
-              </p>
+        {reasoning.trim().length > 0 && (
+          <div className="mb-1.5">
+            {isReasoningStreaming && !displayReply ? (
+              <div className="p-2 rounded-lg bg-natural-bg/50 text-[10px] text-natural-text/75 border border-natural-border/30 whitespace-pre-line leading-relaxed max-h-[160px] overflow-y-auto scrollbar-thin">
+                {formatResponseText(reasoning)}
+                <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" aria-hidden />
+              </div>
+            ) : (
+              <details className="mt-0.5">
+                <summary className="flex items-center gap-1 text-[9px] text-natural-text/50 hover:text-natural-accent font-medium cursor-pointer list-none select-none">
+                  <Brain className="w-3 h-3 shrink-0" />
+                  <span>생각의 흐름 보기</span>
+                </summary>
+                <div className="mt-1 p-2 rounded-lg bg-natural-bg/50 text-[10px] text-natural-text/75 border border-natural-border/30 whitespace-pre-line leading-relaxed max-h-[120px] overflow-y-auto scrollbar-thin">
+                  {formatResponseText(reasoning)}
+                </div>
+              </details>
             )}
           </div>
         )}
 
-        {displayReply ? (
-          <p className="whitespace-pre-line">
-            {displayReply}
+        {displayReply && (
+          <div>
+            <ChatMarkdown text={displayReply} />
             {isReplyStreaming && (
               <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" aria-hidden />
             )}
-          </p>
-        ) : !isDraftStreaming && !reasoning && streamPhase === 'connecting' ? (
-          <div className="flex items-center gap-2 text-natural-text/60 py-0.5">
-            <RefreshCw className="w-3.5 h-3.5 animate-spin text-natural-accent shrink-0" />
-            <span>에이전트가 응답을 준비하고 있습니다...</span>
           </div>
-        ) : null}
+        )}
+
+        {isDrafting && updatedContent.trim() && !displayReply && (
+          <p className="text-[10px] text-natural-text/50 line-clamp-3 whitespace-pre-line">
+            {formatResponseText(updatedContent).slice(0, 200)}
+            <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" aria-hidden />
+          </p>
+        )}
+
+        {!hasVisibleContent && !statusText && (
+          <p className="text-[10px] text-natural-text/60 flex items-center gap-1.5">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-natural-accent shrink-0" />
+            <span>응답 작성 중…</span>
+          </p>
+        )}
       </div>
     </div>
   );
@@ -199,11 +166,13 @@ export default function ChatPanel({
 
   // Find the latest message that contains context tokens and model used info
   const latestModelMsg = [...history].reverse().find(msg => msg.contextTokens !== undefined);
+  const latestModelId = latestModelMsg?.modelUsed || '';
   const latestContextTokens = latestModelMsg?.contextTokens || 0;
-  const latestContextLimit = latestModelMsg?.contextLimit || 1000000;
+  const latestContextLimit =
+    latestModelMsg?.contextLimit ||
+    (latestModelId.replace(/^cursor:/, '') === 'composer-2.5' ? 200_000 : 1_000_000);
   const latestOutputTokens = latestModelMsg?.outputTokens || 0;
   const latestOutputLimit = latestModelMsg?.outputTokenLimit || 0;
-  const latestModelId = latestModelMsg?.modelUsed || '';
   
   const getModelName = (id: string) => {
     if (!id) return "자동 대기 중...";
@@ -449,7 +418,7 @@ export default function ChatPanel({
       ];
     } else if (status === 'writing' || status === 'reviewing') {
       return [
-        "맥킨지 관점에서 이 내용 비평해줘",
+        "이 내용에 대한 솔직한 피드백 줘",
         "내용을 더 날카롭게 수정해줘",
         "여기에 시장 분석 내용을 보완해줘",
         "이 섹션 완성됐으니 확정 및 저장해줘"
@@ -585,7 +554,13 @@ export default function ChatPanel({
                       : 'bg-natural-card border border-natural-border/55 text-natural-text rounded-bl-none'
                   }`}
                 >
-                  <p className="whitespace-pre-wrap break-words">{formatResponseText(msg.text)}</p>
+                  <div className={isUser ? 'whitespace-pre-wrap break-words' : ''}>
+                    {isUser ? (
+                      <p className="whitespace-pre-wrap break-words">{formatResponseText(msg.text)}</p>
+                    ) : (
+                      <ChatMarkdown text={msg.text} />
+                    )}
+                  </div>
                   
                   {msg.reasoning && (
                     <div className="mt-1.5 pt-1.5 border-t border-natural-border/40 text-left">

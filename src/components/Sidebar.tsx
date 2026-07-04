@@ -8,6 +8,7 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   onDeleteSession: (id: string) => void;
   onCreateSession: (rawIdea: string) => void;
+  collapsed?: boolean;
 }
 
 export default function Sidebar({
@@ -16,8 +17,8 @@ export default function Sidebar({
   onSelectSession,
   onDeleteSession,
   onCreateSession,
+  collapsed = false,
 }: SidebarProps) {
-  const [isOpen, setIsOpen] = useState(false);
   const [newIdea, setNewIdea] = useState('');
   const [showCreateModal, setShowCreateModal] = useState(false);
 
@@ -30,42 +31,81 @@ export default function Sidebar({
   };
 
   return (
-    <div className="w-full md:w-80 bg-natural-sidebar border-r border-natural-border flex flex-col h-full text-natural-text" id="sidebar-container">
+    <div
+      className={`w-full h-full bg-natural-sidebar border-r border-natural-border flex flex-col text-natural-text transition-all duration-200 ${
+        collapsed ? 'md:w-14' : 'md:w-80'
+      }`}
+      id="sidebar-container"
+    >
       {/* Header */}
-      <div className="p-5 border-b border-natural-border flex items-center justify-between bg-natural-sidebar/50" id="sidebar-header">
-        <div className="flex items-center gap-3">
-          <div className="w-8 h-8 rounded-full bg-natural-accent flex items-center justify-center font-bold text-white text-sm shadow-sm">
+      <div
+        className={`border-b border-natural-border flex items-center bg-natural-sidebar/50 shrink-0 ${
+          collapsed ? 'p-2 justify-center' : 'p-5 justify-between'
+        }`}
+        id="sidebar-header"
+      >
+        <div className={`flex items-center ${collapsed ? '' : 'gap-3'}`}>
+          <div className="w-8 h-8 rounded-full bg-natural-accent flex items-center justify-center font-bold text-white text-sm shadow-sm shrink-0">
             🌱
           </div>
-          <div>
-            <h1 className="font-bold tracking-tight text-md text-natural-title font-sans">BuildMe</h1>
-            <p className="text-[10px] text-natural-text/60 font-mono tracking-wider uppercase">Idea Architect v1.0</p>
-          </div>
+          {!collapsed && (
+            <div>
+              <h1 className="font-bold tracking-tight text-md text-natural-title font-sans">BuildMe</h1>
+              <p className="text-[10px] text-natural-text/60 font-mono tracking-wider uppercase">Idea Architect v1.0</p>
+            </div>
+          )}
         </div>
       </div>
 
       {/* New Brainstorm button */}
-      <div className="p-4" id="new-brainstorm-btn-wrapper">
+      <div className={collapsed ? 'p-2' : 'p-4'} id="new-brainstorm-btn-wrapper">
         <button
           id="btn-new-brainstorm"
           onClick={() => setShowCreateModal(true)}
-          className="w-full py-2.5 px-4 rounded-xl bg-natural-card hover:bg-natural-hover border border-natural-border hover:border-natural-accent/30 shadow-sm transition-all flex items-center justify-center gap-2 text-xs font-semibold text-natural-title cursor-pointer"
+          title="새로운 생각 빌드업"
+          className={`rounded-xl bg-natural-card hover:bg-natural-hover border border-natural-border hover:border-natural-accent/30 shadow-sm transition-all flex items-center justify-center text-natural-title cursor-pointer ${
+            collapsed ? 'w-10 h-10 mx-auto' : 'w-full py-2.5 px-4 gap-2 text-xs font-semibold'
+          }`}
         >
-          <Plus className="w-4 h-4 text-natural-accent" />
-          새로운 생각 빌드업
+          <Plus className="w-4 h-4 text-natural-accent shrink-0" />
+          {!collapsed && '새로운 생각 빌드업'}
         </button>
       </div>
 
       {/* Sessions List */}
-      <div className="flex-1 overflow-y-auto px-3 space-y-1.5" id="sidebar-sessions-list">
-        <div className="px-2 py-1 text-[10px] font-bold text-natural-text/50 uppercase tracking-widest font-mono">
-          내 빌드미 프로젝트 ({sessions.length})
-        </div>
-        
-        {sessions.length === 0 ? (
-          <div className="p-6 text-center text-natural-text/40 text-xs italic" id="no-sessions-fallback">
-            작성된 기획서가 없습니다.<br />위의 버튼을 눌러 시작해 보세요.
+      <div className={`flex-1 overflow-y-auto space-y-1.5 ${collapsed ? 'px-1.5' : 'px-3'}`} id="sidebar-sessions-list">
+        {!collapsed && (
+          <div className="px-2 py-1 text-[10px] font-bold text-natural-text/50 uppercase tracking-widest font-mono">
+            내 빌드미 프로젝트 ({sessions.length})
           </div>
+        )}
+
+        {sessions.length === 0 ? (
+          !collapsed && (
+            <div className="p-6 text-center text-natural-text/40 text-xs italic" id="no-sessions-fallback">
+              작성된 기획서가 없습니다.<br />위의 버튼을 눌러 시작해 보세요.
+            </div>
+          )
+        ) : collapsed ? (
+          sessions.map((session) => {
+            const isActive = session.id === activeSessionId;
+            const label = (session.title || session.rawIdea || '?').trim().charAt(0).toUpperCase();
+            return (
+              <button
+                key={session.id}
+                type="button"
+                title={session.title || session.rawIdea}
+                onClick={() => onSelectSession(session.id)}
+                className={`w-10 h-10 mx-auto rounded-xl flex items-center justify-center text-xs font-bold border transition-all cursor-pointer ${
+                  isActive
+                    ? 'bg-natural-card border-natural-accent text-natural-accent shadow-sm'
+                    : 'border-transparent text-natural-text/70 hover:bg-natural-card/60 hover:border-natural-border'
+                }`}
+              >
+                {label}
+              </button>
+            );
+          })
         ) : (
           sessions.map((session) => {
             const isActive = session.id === activeSessionId;
@@ -111,7 +151,7 @@ export default function Sidebar({
                   <span className="capitalize px-2 py-0.5 rounded bg-natural-bg text-natural-text font-semibold">
                     {session.status === 'interviewing' && '🧠 인터뷰'}
                     {session.status === 'writing' && '✍️ 기획서 집필'}
-                    {session.status === 'reviewing' && '🧐 맥킨지 비평'}
+                    {session.status === 'reviewing' && '🧐 피드백 조율'}
                     {session.status === 'completed' && '✅ 빌드업 완료'}
                   </span>
                   
@@ -137,6 +177,7 @@ export default function Sidebar({
       </div>
 
       {/* Footer Info */}
+      {!collapsed && (
       <div className="p-4 border-t border-natural-border text-[11px] text-natural-text/70 bg-natural-sidebar flex flex-col gap-1" id="sidebar-footer">
         <div className="flex justify-between">
           <span>모바일 화면 최적화</span>
@@ -149,6 +190,7 @@ export default function Sidebar({
           Tip: [확정] 또는 [저장]을 입력하면 위키에 반영됩니다.
         </div>
       </div>
+      )}
 
       {/* Create Brainstorm Modal */}
       {showCreateModal && (

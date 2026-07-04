@@ -218,12 +218,16 @@ export function mergeTocSections(
   });
 
   for (const old of existing) {
-    if (old.status === 'completed' && !merged.some((m) => m.id === old.id)) {
+    const titleKey = stripLeadingNumber(old.title).toLowerCase();
+    const alreadyMerged = merged.some(
+      (m) => m.id === old.id || stripLeadingNumber(m.title).toLowerCase() === titleKey
+    );
+    if (!alreadyMerged) {
       merged.push(old);
     }
   }
 
-  return normalizeTocSections(merged);
+  return sortTocSections(normalizeTocSections(merged));
 }
 
 /** 인터뷰 질문이 목차에 잘못 들어간 경우 감지 */
@@ -286,6 +290,46 @@ export function filterDocumentTocSections(suggested: TocSection[]): TocSection[]
   );
 }
 
+export function sortTocSections(sections: TocSection[]): TocSection[] {
+  const key = (sec: TocSection): number => {
+    const parsed = parseSectionNumber(sec.title);
+    if (parsed.kind === 'child' && parsed.parentNum != null && parsed.childNum != null) {
+      return parsed.parentNum * 1000 + parsed.childNum;
+    }
+    if (parsed.kind === 'parent' && parsed.parentNum != null) {
+      return parsed.parentNum * 1000;
+    }
+    return 999_999;
+  };
+  return [...sections].sort((a, b) => key(a) - key(b) || a.title.localeCompare(b.title, 'ko'));
+}
+
+/** 사용자가 목차 추가·변경·옵션 선택을 요청했는지 */
+export function userRequestsTocUpdate(userMessage?: string, reply?: string): boolean {
+  const u = (userMessage || '').trim();
+  if (!u && !reply) return false;
+
+  if (/옵션\s*[A-Da-d]/i.test(u)) return true;
+  if (/목차.*(다시|재구성|바꿔|잡아|추가|신설|수정)|다시.*목차|전체.*목차/i.test(u)) return true;
+  if (/(추가|신설|넣).{0,20}(장|목차|섹션|챕터|파트)/i.test(u)) return true;
+  if (/\d+\s*장/.test(u) && /(추가|신설|넣|만들)/i.test(u)) return true;
+
+  const r = (reply || '').trim();
+  if (r && /목차에.*(추가|신설)|신설.*목차|새.*장|5\.\s+\S/.test(r)) return true;
+
+  return false;
+}
+
+export function hasNewTocSections(existing: TocSection[], suggested: TocSection[]): boolean {
+  const keys = new Set(
+    existing.map((s) => `${s.id}|${stripLeadingNumber(s.title).toLowerCase()}`)
+  );
+  return suggested.some((s) => {
+    const key = `${s.id}|${stripLeadingNumber(s.title).toLowerCase()}`;
+    return !keys.has(key);
+  });
+}
+
 export function isInterviewPhaseToc(suggested: TocSection[]): boolean {
   const normalized = normalizeTocSections(suggested);
   return normalized.length > 0 && normalized.every((s) => isInterviewQuestionTitle(s.title));
@@ -302,6 +346,7 @@ export function shouldReplaceTocEntirely(
   if (isInterviewQuestionToc(existing)) return true;
 
   const userIntent = userMessage || "";
+  if (/옵션\s*[A-Da-d]/i.test(userIntent)) return false;
   if (/목차.*(다시|재구성|바꿔|잡아)|다시.*목차|전체.*목차/i.test(userIntent)) {
     return true;
   }
@@ -339,8 +384,13 @@ export function applySuggestedToc(
   );
 
   if (hasEstablishedToc && !explicitReplace) {
+    const tocUpdateRequested = userRequestsTocUpdate(options?.userMessage, reply);
+    const additiveSections = hasNewTocSections(existing, effective);
+
     if (options?.sessionStatus === 'writing' || options?.sessionStatus === 'reviewing') {
-      return repairTocSections(existing);
+      if (!tocUpdateRequested && !additiveSections) {
+        return repairTocSections(existing);
+      }
     }
   }
 

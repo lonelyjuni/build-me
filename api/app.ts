@@ -5,6 +5,7 @@ import { devLog, getDevLogDir, isDevLoggingEnabled, readRecentDevLogs } from "./
 import {
   CURSOR_PROXY_DEFAULT_BASE_URL,
   CURSOR_PROXY_DEFAULT_MODEL,
+  CURSOR_COMPOSER_25_CONTEXT_LIMIT,
   buildOpenAIMessages,
   fetchCursorProxyHealth,
   fetchCursorProxyModels,
@@ -228,7 +229,7 @@ function extractModelChatTextFromResponse(generatedText: string): string {
     if (parsed.critique?.trim()) {
       const critique = parsed.critique.trim();
       if (!parts[0]?.includes(critique.slice(0, Math.min(40, critique.length)))) {
-        parts.push(`\n\n**[비평 및 코멘트]**\n${critique}`);
+        parts.push(parts[0] ? `\n\n${critique}` : critique);
       }
     }
     return parts.join("") || generatedText;
@@ -498,8 +499,8 @@ app.post("/api/chat", async (req, res) => {
 
 [집필 초안 vs 대화창 — 반드시 분리]
 - updatedContent: 오직 해당 목차 섹션의 '기획서 본문'만 마크다운으로 작성. 메타 설명·작성 사유·인사·질문·비평·피드백 반영 설명·반박 의견을 절대 넣지 마세요. 제목(##)도 섹션 본문에 중복 넣지 마세요.
-- reply: 대화창용. 초안 작성 이유·구성 의도·핵심 포인트 설명, 사용자 피드백 수용/반박, 수정 사항 요약, 추가 질문을 여기에 작성합니다.
-- critique: 맥킨지 스타일 비평. reply에 요약을 넣고, critique에 상세 비평을 작성합니다. 둘 다 대화창에만 표시됩니다.
+- reply: 대화창에 표시될 모든 내용. 자연스러운 한국어 대화체로 작성. 목차 피드백·질문·설명·의견은 reply에 통째로 작성하세요. **굵게** 등 마크다운은 가독성을 위해 적절히 사용 가능합니다.
+- critique: 대부분 빈 문자열("")로 두세요. reply에 이미 쓴 내용을 반복하지 마세요. 【구조 평가】·【권고】 같은 형식적 구분, 맥킨지식 비평 템플릿, 보고서 어투는 금지합니다.
 - 집필 중 suggestedToc는 보내지 마세요.
 - suggestedToc의 title에는 짧은 목차 제목만 넣으세요 (예: "1.2 기대 결과"). reply·초안 설명·대화 문장을 title에 넣지 마세요.
 
@@ -510,6 +511,7 @@ app.post("/api/chat", async (req, res) => {
 [TOC 지속 검토]
 - 대화마다 목차 중복·누락을 점검하고, 수정 시에만 suggestedToc를 전체 목록으로 보냅니다.
 - 목차를 재구성할 때는 기존 목차와 병합하지 말고 suggestedToc에 새 전체 목록을 보내세요.
+- 사용자가 옵션(A/B/C/D)을 선택하거나 장·섹션 추가를 요청하면 반드시 suggestedToc에 **갱신된 전체 목차**를 JSON으로 포함하세요. reply에만 말하고 suggestedToc를 비우지 마세요.
 
 [대목차 검토] 사용자 메시지가 [대목차 검토]로 시작하면:
 - 첨부된 확정 본문(해당 대목차만)을 읽고 중복·누락·흐름·모순·용어 일관성을 검토합니다.
@@ -519,8 +521,9 @@ app.post("/api/chat", async (req, res) => {
 - 첨부된 확정 본문 전체를 통독하고 전체 일관성·중복·흐름을 검토합니다.
 - reply와 critique에만 결과를 작성합니다. updatedContent·suggestedToc는 보내지 마세요.
 
-[비평(Critique) 원칙]
-- 날카롭고 구체적이며 실행 가능한 개선점을 제시합니다.
+[피드백·의견 원칙]
+- 목차나 초안에 대한 의견은 친근한 대화처럼 reply에 자연스럽게 작성합니다.
+- 번호·괄호·【】로 구획을 나눈 형식적 비평 보고서 형태를 쓰지 마세요.
 
 [추론(Reasoning)]
 - reasoning 필드에 단계별 사고 과정을 한국어로 기록합니다.
@@ -617,9 +620,8 @@ app.post("/api/chat", async (req, res) => {
             apiModelId: result.modelUsed,
             fallbackOccurred: false,
             contextTokens: result.promptTokens,
-            contextLimit: 128000,
+            contextLimit: CURSOR_COMPOSER_25_CONTEXT_LIMIT,
             outputTokens: result.completionTokens,
-            outputTokenLimit: 32768,
             provider: "cursor-proxy",
           }) + "\n"
         );
@@ -716,7 +718,7 @@ app.post("/api/chat", async (req, res) => {
             });
           }
 
-          const jsonRequirement = `\n\n[IMPORTANT RESPONSE REQUIREMENT]\nYou MUST reply with a single, valid JSON object. No markdown code fences. Return ONLY raw JSON.\n\nField rules:\n- "updatedContent": PURE section body markdown ONLY. No explanations, greetings, critique, or section title headers.\n- "reply": ALL conversational text — draft rationale, feedback acceptance, counter-arguments, questions.\n- "critique": McKinsey-style critique (shown in chat, NOT in draft).\n\nJSON Schema:\n{\n  "reasoning": "Internal thinking in Korean",\n  "reply": "Chat message in Korean — explanations, feedback dialogue, NOT draft body",\n  "suggestedToc": [{ "id": "string", "title": "string", "status": "pending|writing|reviewing|completed", "content": "", "feedback": "" }],\n  "updatedContent": "PURE markdown body for current section only — no meta text",\n  "critique": "McKinsey critique for chat only",\n  "sessionStatus": "interviewing|writing|reviewing|completed",\n  "currentSectionId": "string"\n}`;
+          const jsonRequirement = `\n\n[IMPORTANT RESPONSE REQUIREMENT]\nYou MUST reply with a single, valid JSON object. No markdown code fences. Return ONLY raw JSON.\n\nField rules:\n- "updatedContent": PURE section body markdown ONLY. No explanations, greetings, critique, or section title headers.\n- "reply": ALL chat text in natural Korean — questions, TOC feedback, explanations. Markdown like **bold** is OK for readability.\n- "critique": Usually empty string "". Only non-duplicative extra notes when user explicitly asks for deep review. No 【】section labels or McKinsey report templates.\n\nJSON Schema:\n{\n  "reasoning": "Internal thinking in Korean",\n  "reply": "Natural Korean chat message — NOT draft body",\n  "suggestedToc": [{ "id": "string", "title": "string", "status": "pending|writing|reviewing|completed", "content": "", "feedback": "" }],\n  "updatedContent": "PURE markdown body for current section only — no meta text",\n  "critique": "",\n  "sessionStatus": "interviewing|writing|reviewing|completed",\n  "currentSectionId": "string"\n}`;
           const lastMsg = modelContents[modelContents.length - 1];
           modelContents[modelContents.length - 1] = {
             ...lastMsg,
@@ -767,7 +769,7 @@ app.post("/api/chat", async (req, res) => {
               },
               critique: { 
                 type: Type.STRING, 
-                description: "대화창 전용 맥킨지 스타일 비평. 집필 초안에 넣지 마세요." 
+                description: "보통 비움. reply와 중복되는 형식적 비평 금지." 
               },
               sessionStatus: { 
                 type: Type.STRING, 

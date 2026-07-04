@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { TocSection } from '../types';
 import { getSectionDisplayLabel, getWritableSections, buildFullWikiMarkdown } from '../tocUtils';
-import { sanitizeDraftContent } from '../contentUtils';
-import ReactMarkdown from 'react-markdown';
+import { prepareMarkdownForView } from '../contentUtils';
+import MarkdownView from './MarkdownView';
 import { FileText, Clipboard, Download, CheckCircle, BookOpen } from 'lucide-react';
 import TableOfContents from './TableOfContents';
 
@@ -37,7 +37,8 @@ export default function DocPreview({
     }
   }, [currentSection?.id, currentSection?.content]);
 
-  const draftContent = sanitizeDraftContent(streamingDraft || currentSection?.content || '');
+  const rawDraft = streamingDraft || currentSection?.content || '';
+  const draftContent = prepareMarkdownForView(rawDraft);
 
   const fullWikiMarkdown = buildFullWikiMarkdown(toc);
 
@@ -171,7 +172,7 @@ export default function DocPreview({
 
                 {draftContent ? (
                   <div className="markdown-body bg-natural-bg/25 p-4 rounded-xl border border-natural-border/40 font-sans">
-                    <ReactMarkdown>{draftContent}</ReactMarkdown>
+                    <MarkdownView content={rawDraft} />
                     {isLoading && streamingDraft && (
                       <span className="inline-block w-[2px] h-[1em] ml-0.5 align-text-bottom bg-natural-accent animate-pulse" />
                     )}
@@ -221,7 +222,7 @@ export default function DocPreview({
             </div>
 
             <div className="markdown-body prose prose-stone max-w-none px-6 py-5 text-natural-text text-[13px] leading-relaxed">
-              <ReactMarkdown>{fullWikiMarkdown}</ReactMarkdown>
+              <MarkdownView content={fullWikiMarkdown} />
             </div>
           </div>
         )}
