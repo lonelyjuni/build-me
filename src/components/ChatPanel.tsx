@@ -267,12 +267,15 @@ export default function ChatPanel({
   const latestModelMsg = [...history].reverse().find(msg => msg.contextTokens !== undefined);
   const latestContextTokens = latestModelMsg?.contextTokens || 0;
   const latestContextLimit = latestModelMsg?.contextLimit || 1000000;
+  const latestOutputTokens = latestModelMsg?.outputTokens || 0;
+  const latestOutputLimit = latestModelMsg?.outputTokenLimit || 0;
   const latestModelId = latestModelMsg?.modelUsed || '';
   
-  // Pretty name for the model
   const getModelName = (id: string) => {
     if (!id) return "자동 대기 중...";
-    return id.replace(/^models\//, "");
+    if (id === 'gemma-4-31b') return "Gemma 4 31B";
+    if (id === 'gemma-4-26b') return "Gemma 4 26B";
+    return id;
   };
 
   useEffect(() => {
@@ -520,24 +523,40 @@ export default function ChatPanel({
 
       {/* Model & Cumulative Context Status Bar */}
       {history.length > 0 && (
-        <div className="px-4 py-2 bg-natural-sidebar/15 border-b border-natural-border/60 flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 text-[10px] text-natural-text/85">
+        <div className="px-4 py-2 bg-natural-sidebar/15 border-b border-natural-border/60 flex flex-col gap-1.5 text-[10px] text-natural-text/85">
           <div className="flex items-center gap-1.5 font-sans font-medium">
             <span className="text-natural-accent">🤖 현재 호출 모델:</span>
             <span className="bg-natural-accent/10 border border-natural-accent/20 px-2 py-0.5 rounded font-bold text-[9.5px] text-natural-accent">
               {getModelName(latestModelId)}
             </span>
           </div>
-          <div className="flex items-center gap-2 flex-1 sm:justify-end max-w-sm">
-            <span className="font-semibold text-natural-accent shrink-0">📊 이 프로젝트 대화 누적 사용량:</span>
-            <div className="w-20 sm:w-28 bg-natural-border/45 h-1.5 rounded-full overflow-hidden shrink-0">
-              <div 
-                className="bg-natural-accent h-full rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(100, (latestContextTokens / latestContextLimit) * 100)}%` }}
-              />
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
+            <div className="flex items-center gap-2 flex-1">
+              <span className="font-semibold text-natural-accent shrink-0">📊 입력 누적:</span>
+              <div className="w-16 sm:w-24 bg-natural-border/45 h-1.5 rounded-full overflow-hidden shrink-0">
+                <div 
+                  className="bg-natural-accent h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(100, (latestContextTokens / latestContextLimit) * 100)}%` }}
+                />
+              </div>
+              <span className="font-mono font-bold text-[9px] text-natural-title shrink-0">
+                {latestContextTokens.toLocaleString()} / {latestContextLimit.toLocaleString()}
+              </span>
             </div>
-            <span className="font-mono font-bold text-[9px] text-natural-title shrink-0">
-              {latestContextTokens.toLocaleString()} / {latestContextLimit.toLocaleString()} tokens ({((latestContextTokens / latestContextLimit) * 100).toFixed(2)}%)
-            </span>
+            {latestOutputLimit > 0 && (
+              <div className="flex items-center gap-2 flex-1">
+                <span className="font-semibold text-natural-peach shrink-0">📤 최근 출력:</span>
+                <div className="w-16 sm:w-24 bg-natural-border/45 h-1.5 rounded-full overflow-hidden shrink-0">
+                  <div 
+                    className="bg-natural-peach h-full rounded-full transition-all duration-500"
+                    style={{ width: `${Math.min(100, (latestOutputTokens / latestOutputLimit) * 100)}%` }}
+                  />
+                </div>
+                <span className="font-mono font-bold text-[9px] text-natural-title shrink-0">
+                  {latestOutputTokens.toLocaleString()} / {latestOutputLimit.toLocaleString()}
+                </span>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -620,7 +639,7 @@ export default function ChatPanel({
                     <div className="mt-1.5 pt-1.5 border-t border-natural-border/30 text-left text-[9.5px] text-natural-text/70 flex flex-col gap-1 font-sans">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1">
-                          <span className="font-semibold text-natural-accent">📊 누적 대화 컨텍스트:</span>
+                          <span className="font-semibold text-natural-accent">📊 누적 입력 컨텍스트:</span>
                           <span className="font-mono text-[8.5px] text-natural-text/80">
                             {msg.contextTokens.toLocaleString()} / {msg.contextLimit.toLocaleString()} tokens
                           </span>
@@ -629,6 +648,19 @@ export default function ChatPanel({
                           {((msg.contextTokens / msg.contextLimit) * 100).toFixed(2)}%
                         </span>
                       </div>
+                      {msg.outputTokenLimit !== undefined && msg.outputTokenLimit > 0 && (
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1">
+                            <span className="font-semibold text-natural-peach">📤 이번 응답 출력:</span>
+                            <span className="font-mono text-[8.5px] text-natural-text/80">
+                              {(msg.outputTokens || 0).toLocaleString()} / {msg.outputTokenLimit.toLocaleString()} tokens
+                            </span>
+                          </div>
+                          <span className="font-bold text-[8.5px] text-natural-peach bg-natural-peach/10 px-1.5 py-0.5 rounded shrink-0">
+                            {(((msg.outputTokens || 0) / msg.outputTokenLimit) * 100).toFixed(2)}%
+                          </span>
+                        </div>
+                      )}
                       {msg.modelUsed && (
                         <div className="text-[8.5px] text-natural-text/50 flex items-center gap-1 font-medium">
                           <span>🤖 적용 모델:</span>

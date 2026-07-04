@@ -4,7 +4,8 @@ import Sidebar from './components/Sidebar';
 import TableOfContents from './components/TableOfContents';
 import ChatPanel from './components/ChatPanel';
 import DocPreview from './components/DocPreview';
-import { Sparkles, Brain, ArrowRight, Github, Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon } from 'lucide-react';
+import { buildGemmaModelsFromApi, MODEL_API_MAP } from './modelCatalog';
+import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight } from 'lucide-react';
 
 export default function App() {
   const [sessions, setSessions] = useState<BrainstormSession[]>([]);
@@ -38,7 +39,7 @@ export default function App() {
   const [modelsLoadError, setModelsLoadError] = useState<string | null>(null);
 
   const [modelSettings, setModelSettings] = useState<ModelSettings>({
-    selectedModelId: 'gemini-2.5-flash',
+    selectedModelId: 'gemma-4-31b',
     routingEnabled: true,
     models: []
   });
@@ -52,17 +53,19 @@ export default function App() {
         throw new Error(`모델 목록 조회 실패 (${res.status})`);
       }
       const data = await res.json();
-      const apiModels: ModelConfig[] = (data.models || []).map((m: ModelConfig) => ({
-        ...m,
-        used: 0,
-      }));
+      const gemmaModels = buildGemmaModelsFromApi(data.models || []);
 
       setModelSettings(prev => {
-        const hasSelected = apiModels.some(m => m.id === prev.selectedModelId);
+        const usedById = Object.fromEntries(prev.models.map(m => [m.id, m.used || 0]));
+        const modelsWithUsage = gemmaModels.map(m => ({
+          ...m,
+          used: usedById[m.id] ?? 0,
+        }));
+        const hasSelected = modelsWithUsage.some(m => m.id === prev.selectedModelId);
         return {
           ...prev,
-          models: apiModels,
-          selectedModelId: hasSelected ? prev.selectedModelId : (apiModels[0]?.id || prev.selectedModelId),
+          models: modelsWithUsage,
+          selectedModelId: hasSelected ? prev.selectedModelId : 'gemma-4-31b',
         };
       });
     } catch (err: any) {
@@ -235,6 +238,8 @@ export default function App() {
     let modelUsed = "";
     let contextTokens = 0;
     let contextLimit = 0;
+    let outputTokens = 0;
+    let outputTokenLimit = 0;
 
     const extractJsonField = (buffer: string, fieldName: string): string => {
       const keyStr = `"${fieldName}"`;
@@ -318,6 +323,8 @@ export default function App() {
             modelUsed = parsed.modelUsed || "";
             contextTokens = parsed.contextTokens || 0;
             contextLimit = parsed.contextLimit || 0;
+            outputTokens = parsed.outputTokens || 0;
+            outputTokenLimit = parsed.outputTokenLimit || 0;
           } else if (parsed.type === "error") {
             throw new Error(parsed.message);
           }
@@ -363,6 +370,12 @@ export default function App() {
     }
     if (contextLimit) {
       data.contextLimit = contextLimit;
+    }
+    if (outputTokens) {
+      data.outputTokens = outputTokens;
+    }
+    if (outputTokenLimit) {
+      data.outputTokenLimit = outputTokenLimit;
     }
     
     return data;
@@ -419,6 +432,8 @@ export default function App() {
         type: 'chat',
         contextTokens: data.contextTokens,
         contextLimit: data.contextLimit,
+        outputTokens: data.outputTokens,
+        outputTokenLimit: data.outputTokenLimit,
         modelUsed: data.modelUsed
       };
 
@@ -533,6 +548,8 @@ export default function App() {
         reasoningTime: elapsed,
         contextTokens: data.contextTokens,
         contextLimit: data.contextLimit,
+        outputTokens: data.outputTokens,
+        outputTokenLimit: data.outputTokenLimit,
         modelUsed: data.modelUsed
       };
 
@@ -1042,7 +1059,7 @@ export default function App() {
                 {/* Models List */}
                 <div className="flex flex-col gap-2.5">
                   <div className="flex items-center justify-between gap-2">
-                    <h3 className="text-[9.5px] font-bold uppercase tracking-wider text-natural-text/50 font-mono">API 지원 모델 (generateContent)</h3>
+                    <h3 className="text-[9.5px] font-bold uppercase tracking-wider text-natural-text/50 font-mono">Gemma 4 모델 (API 연동)</h3>
                     <button
                       type="button"
                       onClick={loadModelsFromApi}
@@ -1095,7 +1112,7 @@ export default function App() {
                           </span>
                         </div>
 
-                        <p className="text-[9px] text-natural-text/50 font-mono truncate">{model.id}</p>
+                        <p className="text-[9px] text-natural-text/50 font-mono truncate">API: {MODEL_API_MAP[model.id] || model.id}</p>
 
                         {model.description && (
                           <p className="text-[10px] text-natural-text/75 leading-normal line-clamp-2">

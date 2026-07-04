@@ -15,23 +15,23 @@ export interface ChatMessage {
   reasoning?: string; // 에이전트의 추론 과정
   reasoningTime?: number; // 에이전트의 실제 추론 소요 시간 (초)
   actionType?: 'download_wiki';
-  contextTokens?: number; // 현재 사용 중인 총 컨텍스트 (토큰 수)
-  contextLimit?: number;  // 실제 LLM 모델별 총 컨텍스트 허용량 (토큰 수)
-  modelUsed?: string;     // 실제로 호출되어 답변을 생성한 LLM 모델 ID
+  contextTokens?: number; // 누적 입력 컨텍스트 (토큰 수)
+  contextLimit?: number;  // 모델 입력 토큰 한도
+  outputTokens?: number;  // 이번 응답 출력 토큰 (추정)
+  outputTokenLimit?: number; // 모델 출력 토큰 한도
+  modelUsed?: string;     // UI 모델 ID (gemma-4-31b 등)
 }
 
 export interface ModelConfig {
   id: string;
   name: string;
   description: string;
+  apiModelId?: string;
   inputTokenLimit?: number;
   outputTokenLimit?: number;
   version?: string;
-  used?: number; // 이번 브라우저 세션에서 사용한 횟수 (로컬 추적)
-  limit?: number; // deprecated: API에서 제공하지 않음
+  used?: number;
   fallbackId?: string;
-  rpmLimit?: number;
-  tpmLimit?: string;
 }
 
 export interface ModelSettings {

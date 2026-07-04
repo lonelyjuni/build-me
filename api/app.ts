@@ -17,7 +17,7 @@ app.use(express.urlencoded({ limit: "50mb", extended: true }));
 let globalSettings = {
   geminiApiKey: process.env.GEMINI_API_KEY || "",
   routingEnabled: true,
-  selectedModelId: "gemini-2.5-flash",
+  selectedModelId: "gemma-4-31b",
   adminPassword: "admin", // Default password to access config
 };
 
@@ -62,6 +62,22 @@ async function fetchAvailableModels() {
   }
 
   return models;
+}
+
+const MODEL_API_MAP: Record<string, string> = {
+  "gemma-4-31b": "gemma-4-31b-it",
+  "gemma-4-26b": "gemma-4-26b-a4b-it",
+};
+
+function resolveApiModelId(uiModelId: string): string {
+  return MODEL_API_MAP[uiModelId] || uiModelId;
+}
+
+function buildFallbackChain(primary: string, isRouting: boolean): string[] {
+  if (!isRouting) return [primary];
+  if (primary === "gemma-4-31b") return ["gemma-4-31b", "gemma-4-26b"];
+  if (primary === "gemma-4-26b") return ["gemma-4-26b", "gemma-4-31b"];
+  return [primary];
 }
 
 // Health check
@@ -236,33 +252,23 @@ app.post("/api/chat", async (req, res) => {
     const primaryModel = selectedModelId || globalSettings.selectedModelId;
     const isRouting = routingEnabled !== undefined ? routingEnabled : globalSettings.routingEnabled;
 
-    const buildFallbackChain = (primary: string): string[] => {
-      const fallbacks: Record<string, string> = {
-        "gemini-2.5-pro": "gemini-2.5-flash",
-        "gemini-2.5-flash": "gemini-2.0-flash-lite",
-        "gemini-2.0-flash": "gemini-2.0-flash-lite",
-      };
-      if (!isRouting) return [primary];
-      const secondary = fallbacks[primary];
-      return secondary && secondary !== primary ? [primary, secondary] : [primary];
-    };
-
-    const fallbackChain = buildFallbackChain(primaryModel);
+    const fallbackChain = buildFallbackChain(primaryModel, isRouting);
 
     let responseStream: any = null;
     let actualModelUsed = '';
-    let actualApiModelUsed = primaryModel;
+    let actualApiModelUsed = resolveApiModelId(primaryModel);
     let contextTokens = 0;
     let modelInputTokenLimit = 1048576;
+    let modelOutputTokenLimit = 32768;
     let lastError: any = null;
 
     for (const model of fallbackChain) {
       try {
         actualModelUsed = model;
-        const actualApiModel = model;
+        const actualApiModel = resolveApiModelId(model);
         actualApiModelUsed = actualApiModel;
 
-        const isGemma = model.toLowerCase().includes("gemma");
+        const isGemma = actualApiModel.toLowerCase().includes("gemma");
 
         // Adjust contents for Gemma models to include system instructions and schema instructions inside user message
         let modelContents = [...contents];
@@ -382,6 +388,9 @@ app.post("/api/chat", async (req, res) => {
           if (modelInfo.inputTokenLimit) {
             modelInputTokenLimit = modelInfo.inputTokenLimit;
           }
+          if (modelInfo.outputTokenLimit) {
+            modelOutputTokenLimit = modelInfo.outputTokenLimit;
+          }
         } catch (modelInfoErr) {
           console.warn(`models.get failed for ${actualApiModel}:`, modelInfoErr);
         }
@@ -425,14 +434,18 @@ app.post("/api/chat", async (req, res) => {
     const actualModelLimit = modelInputTokenLimit;
     const estimatedResponseTokens = Math.ceil(generatedText.length / 2.5);
     const finalContextTokens = Math.min(actualModelLimit, contextTokens + estimatedResponseTokens);
+    const finalOutputTokens = Math.min(modelOutputTokenLimit, estimatedResponseTokens);
 
     // Send final metadata
     res.write(JSON.stringify({
       type: "metadata",
       modelUsed: actualModelUsed,
+      apiModelId: actualApiModelUsed,
       fallbackOccurred: actualModelUsed !== primaryModel,
       contextTokens: finalContextTokens,
-      contextLimit: actualModelLimit
+      contextLimit: actualModelLimit,
+      outputTokens: finalOutputTokens,
+      outputTokenLimit: modelOutputTokenLimit,
     }) + "\n");
 
     res.end();
