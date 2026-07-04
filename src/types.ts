@@ -17,8 +17,8 @@ export interface ChatMessage {
   reasoning?: string; // 에이전트의 추론 과정
   reasoningTime?: number; // 에이전트의 실제 추론 소요 시간 (초)
   actionType?: 'download_wiki';
-  contextTokens?: number; // 누적 입력 컨텍스트 (토큰 수)
-  contextLimit?: number;  // 모델 입력 토큰 한도
+  contextTokens?: number; // LLM 누적 컨텍스트 사용량 (시스템·대화·응답 합산)
+  contextLimit?: number;  // 모델 컨텍스트 윈도우 한도
   outputTokens?: number;  // 이번 응답 출력 토큰 (추정)
   outputTokenLimit?: number; // 모델 출력 토큰 한도
   modelUsed?: string;     // UI 모델 ID (gemma-4-31b 등)

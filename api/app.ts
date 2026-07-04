@@ -80,6 +80,120 @@ function buildFallbackChain(primary: string, isRouting: boolean): string[] {
   return [primary];
 }
 
+/** 세션에 쌓인 대화만 추출 (시스템 알림 제외) */
+function buildChatContentsForContextCount(
+  sessionState: any,
+  userMessage: string,
+  latestModelText?: string
+) {
+  const chatMessages = (sessionState.history || []).filter(
+    (msg: any) =>
+      (msg.role === "user" || msg.role === "model") &&
+      msg.type !== "system_alert" &&
+      typeof msg.text === "string" &&
+      msg.text.trim()
+  );
+
+  const contents = chatMessages.map((msg: any) => ({
+    role: msg.role === "user" ? "user" : "model",
+    parts: [{ text: msg.text }],
+  }));
+
+  const last = chatMessages[chatMessages.length - 1];
+  const userAlreadyInHistory = last?.role === "user" && last?.text === userMessage;
+
+  if (!userAlreadyInHistory && userMessage?.trim()) {
+    contents.push({ role: "user", parts: [{ text: userMessage }] });
+  }
+
+  if (latestModelText?.trim()) {
+    contents.push({ role: "model", parts: [{ text: latestModelText }] });
+  }
+
+  return contents;
+}
+
+function extractModelChatTextFromResponse(generatedText: string): string {
+  try {
+    let cleaned = generatedText.trim();
+    const firstBrace = cleaned.indexOf("{");
+    const lastBrace = cleaned.lastIndexOf("}");
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      cleaned = cleaned.substring(firstBrace, lastBrace + 1);
+    }
+    const parsed = JSON.parse(cleaned);
+    const parts: string[] = [];
+    if (parsed.reply?.trim()) parts.push(parsed.reply.trim());
+    if (parsed.critique?.trim()) {
+      const critique = parsed.critique.trim();
+      if (!parts[0]?.includes(critique.slice(0, Math.min(40, critique.length)))) {
+        parts.push(`\n\n**[비평 및 코멘트]**\n${critique}`);
+      }
+    }
+    return parts.join("") || generatedText;
+  } catch {
+    return generatedText;
+  }
+}
+
+/** LLM이 점유하는 누적 컨텍스트 = 시스템 지시 + 전체 대화 + 이번 응답 */
+async function countSessionContextTokens(
+  ai: GoogleGenAI,
+  model: string,
+  systemInstruction: string,
+  sessionState: any,
+  userMessage: string,
+  generatedText: string
+): Promise<{ contextTokens: number; outputTokens: number }> {
+  const modelChatText = extractModelChatTextFromResponse(generatedText);
+  const contents = buildChatContentsForContextCount(
+    sessionState,
+    userMessage,
+    modelChatText
+  );
+
+  let contextTokens = 0;
+  let outputTokens = 0;
+
+  try {
+    const contextResult = await ai.models.countTokens({
+      model,
+      contents,
+      config: { systemInstruction },
+    });
+    contextTokens = contextResult.totalTokens || 0;
+  } catch {
+    try {
+      const fallbackResult = await ai.models.countTokens({
+        model,
+        contents: [
+          { role: "user", parts: [{ text: systemInstruction }] },
+          ...contents,
+        ],
+      });
+      contextTokens = fallbackResult.totalTokens || 0;
+    } catch {
+      const charCount =
+        systemInstruction.length +
+        contents.reduce((sum, item) => sum + (item.parts[0]?.text?.length || 0), 0);
+      contextTokens = Math.ceil(charCount / 4);
+    }
+  }
+
+  const outputText = modelChatText || generatedText;
+  try {
+    const outputResult = await ai.models.countTokens({
+      model,
+      contents: [{ role: "model", parts: [{ text: outputText }] }],
+    });
+    outputTokens = outputResult.totalTokens || 0;
+  } catch {
+    outputTokens = Math.ceil(outputText.length / 2.5);
+  }
+
+  return { contextTokens, outputTokens };
+}
+
 // Health check
 app.get("/api/health", async (req, res) => {
   try {
@@ -251,7 +365,6 @@ app.post("/api/chat", async (req, res) => {
     let responseStream: any = null;
     let actualModelUsed = '';
     let actualApiModelUsed = resolveApiModelId(primaryModel);
-    let contextTokens = 0;
     let modelInputTokenLimit = 1048576;
     let modelOutputTokenLimit = 32768;
     let lastError: any = null;
@@ -286,36 +399,6 @@ app.post("/api/chat", async (req, res) => {
             ...lastMsg,
             parts: [{ text: lastMsg.parts[0].text + jsonRequirement }]
           };
-        }
-
-        // Calculate cumulative context tokens for the ENTIRE history from the start of the session
-        try {
-          const allSessionContents = sessionState.history.map((msg: any) => ({
-            role: msg.role === 'user' ? 'user' : 'model',
-            parts: [{ text: msg.text }]
-          }));
-          
-          // Check if userMessage is already in the last history element to avoid duplicate counting
-          const isUserMsgAlreadyInHistory = sessionState.history.length > 0 && 
-            sessionState.history[sessionState.history.length - 1].role === 'user' &&
-            sessionState.history[sessionState.history.length - 1].text === userMessage;
-            
-          if (!isUserMsgAlreadyInHistory) {
-            allSessionContents.push({
-              role: 'user',
-              parts: [{ text: userMessage }]
-            });
-          }
-          
-          const fullTokenCountResult = await ai.models.countTokens({
-            model: actualApiModel,
-            contents: allSessionContents,
-          });
-          contextTokens = fullTokenCountResult.totalTokens || 0;
-        } catch (tokenErr) {
-          console.warn(`cumulative countTokens failed for ${actualApiModel}:`, tokenErr);
-          const charCount = JSON.stringify(sessionState.history).length + userMessage.length;
-          contextTokens = Math.ceil(charCount / 4);
         }
 
         const config: any = {
@@ -424,11 +507,19 @@ app.post("/api/chat", async (req, res) => {
       }
     }
 
-    // Get context limits based on the actual API model used
-    const actualModelLimit = modelInputTokenLimit;
-    const estimatedResponseTokens = Math.ceil(generatedText.length / 2.5);
-    const finalContextTokens = Math.min(actualModelLimit, contextTokens + estimatedResponseTokens);
-    const finalOutputTokens = Math.min(modelOutputTokenLimit, estimatedResponseTokens);
+    // LLM 누적 컨텍스트 = 시스템 지시 + 세션 대화 + 이번 응답
+    const { contextTokens: measuredContext, outputTokens: measuredOutput } =
+      await countSessionContextTokens(
+        ai,
+        actualApiModelUsed,
+        systemInstruction,
+        sessionState,
+        userMessage,
+        generatedText
+      );
+
+    const finalContextTokens = Math.min(modelInputTokenLimit, measuredContext);
+    const finalOutputTokens = Math.min(modelOutputTokenLimit, measuredOutput);
 
     // Send final metadata
     res.write(JSON.stringify({
@@ -437,7 +528,7 @@ app.post("/api/chat", async (req, res) => {
       apiModelId: actualApiModelUsed,
       fallbackOccurred: actualModelUsed !== primaryModel,
       contextTokens: finalContextTokens,
-      contextLimit: actualModelLimit,
+      contextLimit: modelInputTokenLimit,
       outputTokens: finalOutputTokens,
       outputTokenLimit: modelOutputTokenLimit,
     }) + "\n");

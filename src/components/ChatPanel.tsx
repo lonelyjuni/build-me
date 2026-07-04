@@ -325,7 +325,7 @@ export default function ChatPanel({
   };
 
   const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
+    if (e.key === 'Enter' && !e.shiftKey && !(e.nativeEvent as KeyboardEvent).isComposing) {
       e.preventDefault();
       handleSend();
     }
@@ -400,7 +400,9 @@ export default function ChatPanel({
           </div>
           <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4">
             <div className="flex items-center gap-2 flex-1">
-              <span className="font-semibold text-natural-accent shrink-0">📊 입력 누적:</span>
+              <span className="font-semibold text-natural-accent shrink-0" title="시스템 지시·대화·응답이 합쳐진 LLM 컨텍스트 점유량">
+                📊 컨텍스트:
+              </span>
               <div className="w-16 sm:w-24 bg-natural-border/45 h-1.5 rounded-full overflow-hidden shrink-0">
                 <div 
                   className="bg-natural-accent h-full rounded-full transition-all duration-500"
@@ -426,6 +428,9 @@ export default function ChatPanel({
               </div>
             )}
           </div>
+          <p className="text-[8.5px] text-natural-text/45 leading-snug">
+            LLM이 이번 세션에서 기억하고 있는 전체 분량 (시스템 지시 + 대화 + 응답)
+          </p>
         </div>
       )}
 
@@ -507,7 +512,9 @@ export default function ChatPanel({
                     <div className="mt-1.5 pt-1.5 border-t border-natural-border/30 text-left text-[9.5px] text-natural-text/70 flex flex-col gap-1 font-sans">
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-1">
-                          <span className="font-semibold text-natural-accent">📊 누적 입력 컨텍스트:</span>
+                          <span className="font-semibold text-natural-accent" title="시스템 지시·대화·응답 합산">
+                            📊 누적 컨텍스트:
+                          </span>
                           <span className="font-mono text-[8.5px] text-natural-text/80">
                             {msg.contextTokens.toLocaleString()} / {msg.contextLimit.toLocaleString()} tokens
                           </span>
@@ -579,44 +586,52 @@ export default function ChatPanel({
             </button>
           </div>
         )}
-        <form onSubmit={handleSend} className="flex gap-1.5 items-end">
-          <textarea
-            id="chat-text-input"
-            ref={inputRef}
-            value={inputText}
-            onChange={(e) => handleInputChange(e.target.value)}
-            onKeyDown={handleInputKeyDown}
-            disabled={isLoading}
-            rows={1}
-            placeholder={
-              status === 'interviewing' 
-                ? "여기에 생각을 더 입력하거나 질문에 답해 보세요..." 
-                : "비평을 보고 아이디어를 더 보충하거나 고쳐 보세요..."
-            }
-            className="flex-1 min-w-0 bg-natural-card border border-natural-border rounded-xl px-3 py-2 text-xs text-natural-title placeholder-natural-text/40 focus:outline-none focus:ring-1 focus:ring-natural-accent disabled:opacity-50 resize-none overflow-y-auto overflow-x-hidden break-words whitespace-pre-wrap leading-relaxed max-h-40"
-          />
-          <button
-            id="chat-voice-input-btn"
-            type="button"
-            onClick={toggleListening}
-            disabled={isLoading}
-            className={`p-2 rounded-xl border transition-all flex items-center justify-center shrink-0 cursor-pointer ${
-              isListening
-                ? 'bg-rose-500 border-rose-600 text-white animate-pulse shadow-sm'
-                : 'bg-natural-card border-natural-border hover:border-natural-accent/30 text-natural-text/70 hover:text-natural-title'
-            }`}
-            title={isListening ? "음성 인식 중 (클릭하여 멈춤)" : "음성으로 받아쓰기"}
-          >
-            {isListening ? <MicOff className="w-3.5 h-3.5" /> : <Mic className="w-3.5 h-3.5" />}
-          </button>
-          <button
-            id="chat-send-submit"
-            type="submit"
-            disabled={isLoading || !inputText.trim()}
-            className="px-3 rounded-xl bg-natural-accent hover:bg-natural-accent-hover text-white font-semibold transition disabled:opacity-50 flex items-center justify-center shrink-0 cursor-pointer shadow-sm"
-          >
-            <Send className="w-3.5 h-3.5" />
-          </button>
+        <form onSubmit={handleSend} className="flex flex-col gap-1">
+          <div className="flex gap-1.5 items-end">
+            <textarea
+              id="chat-text-input"
+              ref={inputRef}
+              value={inputText}
+              onChange={(e) => handleInputChange(e.target.value)}
+              onKeyDown={handleInputKeyDown}
+              disabled={isLoading}
+              rows={1}
+              placeholder={
+                status === 'interviewing'
+                  ? '여기에 생각을 더 입력하거나 질문에 답해 보세요...'
+                  : '비평을 보고 아이디어를 더 보충하거나 고쳐 보세요...'
+              }
+              className="flex-1 min-w-0 bg-natural-card border border-natural-border rounded-xl px-3 py-2 text-xs text-natural-title placeholder-natural-text/40 focus:outline-none focus:ring-1 focus:ring-natural-accent disabled:opacity-50 resize-none overflow-y-auto overflow-x-hidden break-words whitespace-pre-wrap leading-relaxed max-h-40"
+            />
+            <div className="flex gap-1.5 shrink-0">
+              <button
+                id="chat-voice-input-btn"
+                type="button"
+                onClick={toggleListening}
+                disabled={isLoading}
+                className={`w-9 h-9 rounded-xl border transition-all flex items-center justify-center shrink-0 cursor-pointer ${
+                  isListening
+                    ? 'bg-rose-500 border-rose-600 text-white animate-pulse shadow-sm'
+                    : 'bg-natural-card border-natural-border hover:border-natural-accent/30 text-natural-text/70 hover:text-natural-title'
+                }`}
+                title={isListening ? '음성 인식 중 (클릭하여 멈춤)' : '음성으로 받아쓰기'}
+              >
+                {isListening ? <MicOff className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+              </button>
+              <button
+                id="chat-send-submit"
+                type="submit"
+                disabled={isLoading || !inputText.trim()}
+                className="w-9 h-9 rounded-xl bg-natural-accent hover:bg-natural-accent-hover text-white transition disabled:opacity-50 flex items-center justify-center shrink-0 cursor-pointer shadow-sm"
+                title="전송"
+              >
+                <Send className="w-4 h-4" />
+              </button>
+            </div>
+          </div>
+          <span className="text-[9px] text-natural-text/40 px-1 select-none">
+            Enter 전송 · Shift+Enter 줄바꿈
+          </span>
         </form>
       </div>
     </div>
