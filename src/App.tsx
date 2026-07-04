@@ -5,7 +5,17 @@ import TableOfContents from './components/TableOfContents';
 import ChatPanel from './components/ChatPanel';
 import DocPreview from './components/DocPreview';
 import { buildGemmaModelsFromApi, MODEL_API_MAP } from './modelCatalog';
-import { buildFullWikiMarkdown, mergeTocSections, findNextWritableSection, normalizeTocSections, getSectionDisplayLabel } from './tocUtils';
+import {
+  mergeTocSections,
+  findNextWritableSection,
+  normalizeTocSections,
+  getSectionDisplayLabel,
+  buildFullWikiMarkdown,
+  isChapterJustCompleted,
+  getChapterNumberForSection,
+  buildChapterReviewMarkdown,
+  buildConfirmedContentMarkdown,
+} from './tocUtils';
 import { sanitizeDraftContent, buildModelChatText } from './contentUtils';
 import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight } from 'lucide-react';
 
@@ -436,6 +446,50 @@ export default function App() {
     };
   };
 
+  const buildChapterReviewPrompt = (toc: TocSection[], chapterNum: string) => {
+    const body = buildChapterReviewMarkdown(toc, chapterNum);
+    return `[대목차 검토] ${chapterNum}번 대목차의 모든 소목차 확정이 완료되었습니다.
+아래 확정 집필 본문만 검토해 주세요. 중복·누락·흐름·모순·용어 일관성을 점검합니다.
+
+- reply: 검토 요약 및 개선 제안 (대화창)
+- critique: 맥킨지 스타일 상세 비평 (대화창)
+- updatedContent 보내지 마세요
+- suggestedToc 보내지 마세요
+- sessionStatus: "reviewing"
+
+---
+${body}`;
+  };
+
+  const buildFullDocumentReviewPrompt = (toc: TocSection[]) => {
+    const body = buildConfirmedContentMarkdown(toc);
+    return `[전체 기획서 검토] 모든 섹션 집필이 완료되었습니다.
+아래 확정 본문 전체를 통독하여 전체 일관성·중복·흐름·모순을 검토해 주세요.
+
+- reply / critique에만 검토 결과 작성
+- updatedContent, suggestedToc 보내지 마세요
+- sessionStatus: "completed"
+
+---
+${body}`;
+  };
+
+  const triggerChapterReview = async (session: BrainstormSession, chapterNum: string) => {
+    const body = buildChapterReviewMarkdown(session.toc, chapterNum);
+    if (!body || isLoading) return session;
+    setMobileActiveTab('chat');
+    const result = await executeChatRound(session, buildChapterReviewPrompt(session.toc, chapterNum));
+    return result?.nextSession ?? session;
+  };
+
+  const triggerFullDocumentReview = async (session: BrainstormSession) => {
+    const body = buildConfirmedContentMarkdown(session.toc);
+    if (!body || isLoading) return session;
+    setMobileActiveTab('chat');
+    const result = await executeChatRound(session, buildFullDocumentReviewPrompt(session.toc));
+    return result?.nextSession ?? session;
+  };
+
   const buildSectionDraftPrompt = (section: TocSection, toc: TocSection[]) =>
     `[자동 집필 시작] "${getSectionDisplayLabel(section, toc)}" 섹션 초안을 작성해 주세요.
 - updatedContent: 기획서 본문만 (설명·비평·인사 없이 순수 마크다운 본문)
@@ -739,6 +793,8 @@ export default function App() {
 
     const nextSec = findNextWritableSection(updatedToc);
     const nextSecId = nextSec ? nextSec.id : null;
+    const chapterNum = getChapterNumberForSection(currentSecId, updatedToc);
+    const chapterJustDone = isChapterJustCompleted(currentSecId, updatedToc);
 
     const confirmAlert: ChatMessage = {
       id: `confirm_${Date.now()}`,
@@ -747,6 +803,24 @@ export default function App() {
       timestamp: new Date().toISOString(),
       type: 'system_alert',
     };
+
+    const reviewAlert: ChatMessage | null = !nextSec
+      ? {
+          id: `review_full_${Date.now()}`,
+          role: 'system',
+          text: '[전체 검토] 확정된 기획서 전체를 통독 검토합니다…',
+          timestamp: new Date().toISOString(),
+          type: 'system_alert',
+        }
+      : chapterJustDone && chapterNum
+        ? {
+            id: `review_ch_${Date.now()}`,
+            role: 'system',
+            text: `[대목차 검토] ${chapterNum}번 대목차 확정본을 검토한 뒤 다음 섹션으로 넘어갑니다.`,
+            timestamp: new Date().toISOString(),
+            type: 'system_alert',
+          }
+        : null;
 
     const nextAlert: ChatMessage = nextSec
       ? {
@@ -775,15 +849,29 @@ export default function App() {
       toc: tocWithNextWriting,
       currentSectionId: nextSecId,
       status: nextSec ? ('writing' as const) : ('completed' as const),
-      history: [...activeSession.history, confirmAlert, nextAlert],
+      history: [
+        ...activeSession.history,
+        confirmAlert,
+        ...(reviewAlert ? [reviewAlert] : []),
+        nextAlert,
+      ],
       updatedAt: new Date().toISOString(),
     };
 
     setSessions((prev) => prev.map((sess) => (sess.id === activeSession.id ? updatedSession : sess)));
     setMobileActiveTab('doc');
 
-    if (nextSec && nextSecId && !nextSec.content) {
-      await triggerSectionDraft(updatedSession, { ...nextSec, status: 'writing' });
+    let sessionAfterReview: BrainstormSession = updatedSession;
+
+    if (!nextSec) {
+      sessionAfterReview = await triggerFullDocumentReview(updatedSession);
+    } else if (chapterJustDone && chapterNum) {
+      sessionAfterReview = await triggerChapterReview(updatedSession, chapterNum);
+    }
+
+    const freshNext = findNextWritableSection(sessionAfterReview.toc);
+    if (freshNext && !freshNext.content) {
+      await triggerSectionDraft(sessionAfterReview, { ...freshNext, status: 'writing' });
     }
   };
 

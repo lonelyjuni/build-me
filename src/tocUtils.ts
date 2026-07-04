@@ -329,3 +329,64 @@ export function buildFullWikiMarkdown(toc: TocSection[]): string {
 
   return blocks.join('\n').trimEnd() + '\n';
 }
+
+export function getChapterNumberForSection(sectionId: string, toc: TocSection[]): string | null {
+  const rows = buildTocDisplayRows(toc);
+  const row = rows.find((r) => r.id === sectionId);
+  if (!row) return null;
+  return row.displayNumber.split('.')[0];
+}
+
+export function getWritableSectionsInChapter(toc: TocSection[], chapterNum: string): TocSection[] {
+  const rows = buildTocDisplayRows(toc);
+  const idToRow = Object.fromEntries(rows.map((r) => [r.id, r]));
+  return getWritableSections(toc).filter((sec) => {
+    const row = idToRow[sec.id];
+    return row && row.displayNumber.split('.')[0] === chapterNum;
+  });
+}
+
+/** 해당 대목차의 소목차가 모두 completed인지 */
+export function isChapterFullyConfirmed(toc: TocSection[], chapterNum: string): boolean {
+  const inChapter = getWritableSectionsInChapter(toc, chapterNum);
+  return inChapter.length > 0 && inChapter.every((s) => s.status === 'completed');
+}
+
+/** 방금 확정한 섹션으로 인해 대목차 집필이 막 끝났는지 */
+export function isChapterJustCompleted(sectionId: string, toc: TocSection[]): boolean {
+  const chapterNum = getChapterNumberForSection(sectionId, toc);
+  if (!chapterNum) return false;
+  return isChapterFullyConfirmed(toc, chapterNum);
+}
+
+/** 대목차 검토용 — 해당 장의 확정 본문만 */
+export function buildChapterReviewMarkdown(toc: TocSection[], chapterNum: string): string {
+  const sections = getWritableSectionsInChapter(toc, chapterNum).filter(
+    (s) => s.status === 'completed' && s.content?.trim()
+  );
+  if (sections.length === 0) return '';
+
+  const rows = buildTocDisplayRows(toc);
+  const parentRow = rows.find((r) => !r.isSub && r.displayNumber === chapterNum);
+  const chapterTitle = parentRow ? formatSectionHeading(parentRow) : `${chapterNum}.`;
+
+  const blocks = [`# ${chapterTitle} (확정본 검토)`, ''];
+  for (const sec of sections) {
+    blocks.push(`## ${getSectionDisplayLabel(sec, toc)}`, '', sanitizeDraftContent(sec.content), '');
+  }
+  return blocks.join('\n').trim();
+}
+
+/** 전체 완료 검토용 — 확정된 집필 본문만 */
+export function buildConfirmedContentMarkdown(toc: TocSection[]): string {
+  const completed = getWritableSections(toc).filter(
+    (s) => s.status === 'completed' && s.content?.trim()
+  );
+  if (completed.length === 0) return '';
+
+  const blocks = ['# 확정된 기획서 전체 (검토용)', ''];
+  for (const sec of completed) {
+    blocks.push(`## ${getSectionDisplayLabel(sec, toc)}`, '', sanitizeDraftContent(sec.content), '');
+  }
+  return blocks.join('\n').trim();
+}

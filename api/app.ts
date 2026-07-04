@@ -311,6 +311,14 @@ app.post("/api/chat", async (req, res) => {
 [TOC 지속 검토]
 - 대화마다 목차 중복·누락을 점검하고, 수정 시에만 suggestedToc를 전체 목록으로 보냅니다.
 
+[대목차 검토] 사용자 메시지가 [대목차 검토]로 시작하면:
+- 첨부된 확정 본문(해당 대목차만)을 읽고 중복·누락·흐름·모순·용어 일관성을 검토합니다.
+- reply와 critique에만 결과를 작성합니다. updatedContent·suggestedToc는 보내지 마세요.
+
+[전체 기획서 검토] 사용자 메시지가 [전체 기획서 검토]로 시작하면:
+- 첨부된 확정 본문 전체를 통독하고 전체 일관성·중복·흐름을 검토합니다.
+- reply와 critique에만 결과를 작성합니다. updatedContent·suggestedToc는 보내지 마세요.
+
 [비평(Critique) 원칙]
 - 날카롭고 구체적이며 실행 가능한 개선점을 제시합니다.
 
