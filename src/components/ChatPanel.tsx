@@ -92,6 +92,7 @@ export default function ChatPanel({
   const [isListening, setIsListening] = useState(false);
   const [voiceError, setVoiceError] = useState<string | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
   const recognitionRef = useRef<any>(null);
 
   const inputTextRef = useRef(inputText);
@@ -116,6 +117,20 @@ export default function ChatPanel({
 
   useEffect(() => {
     inputTextRef.current = inputText;
+  }, [inputText]);
+
+  // 음성 입력 시 텍스트가 늘어나도 커서·내용이 항상 보이도록 입력창 크기·스크롤 조정
+  useEffect(() => {
+    const el = inputRef.current;
+    if (!el) return;
+
+    el.style.height = 'auto';
+    const nextHeight = Math.min(el.scrollHeight, 160);
+    el.style.height = `${nextHeight}px`;
+
+    const cursorPos = el.value.length;
+    el.setSelectionRange(cursorPos, cursorPos);
+    el.scrollTop = el.scrollHeight;
   }, [inputText]);
 
   useEffect(() => {
@@ -290,13 +305,20 @@ export default function ChatPanel({
     }
   };
 
-  const handleSend = (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleSend = (e?: React.FormEvent) => {
+    e?.preventDefault();
     if (!inputText.trim() || isLoading) return;
     onSendMessage(inputText);
     setInputText('');
     baseTextRef.current = '';
     lastRecognizedRef.current = '';
+  };
+
+  const handleInputKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSend();
+    }
   };
 
   const scrollToBottom = () => {
@@ -449,7 +471,7 @@ export default function ChatPanel({
                       : 'bg-natural-card border border-natural-border/55 text-natural-text rounded-bl-none'
                   }`}
                 >
-                  <p className="whitespace-pre-line">{formatResponseText(msg.text)}</p>
+                  <p className="whitespace-pre-wrap break-words">{formatResponseText(msg.text)}</p>
                   
                   {msg.reasoning && (
                     <div className="mt-1.5 pt-1.5 border-t border-natural-border/40 text-left">
@@ -547,19 +569,21 @@ export default function ChatPanel({
             </button>
           </div>
         )}
-        <form onSubmit={handleSend} className="flex gap-1.5">
-          <input
+        <form onSubmit={handleSend} className="flex gap-1.5 items-end">
+          <textarea
             id="chat-text-input"
-            type="text"
+            ref={inputRef}
             value={inputText}
             onChange={(e) => handleInputChange(e.target.value)}
+            onKeyDown={handleInputKeyDown}
             disabled={isLoading}
+            rows={1}
             placeholder={
               status === 'interviewing' 
                 ? "여기에 생각을 더 입력하거나 질문에 답해 보세요..." 
                 : "비평을 보고 아이디어를 더 보충하거나 고쳐 보세요..."
             }
-            className="flex-1 bg-natural-card border border-natural-border rounded-xl px-3 py-2 text-xs text-natural-title placeholder-natural-text/40 focus:outline-none focus:ring-1 focus:ring-natural-accent disabled:opacity-50"
+            className="flex-1 min-w-0 bg-natural-card border border-natural-border rounded-xl px-3 py-2 text-xs text-natural-title placeholder-natural-text/40 focus:outline-none focus:ring-1 focus:ring-natural-accent disabled:opacity-50 resize-none overflow-y-auto overflow-x-hidden break-words whitespace-pre-wrap leading-relaxed max-h-40"
           />
           <button
             id="chat-voice-input-btn"
