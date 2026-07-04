@@ -10,7 +10,7 @@ import {
   findNextWritableSection,
   normalizeTocSections,
   getSectionDisplayLabel,
-  getWritableSections,
+  buildFullWikiMarkdown,
 } from './tocUtils';
 import { Settings, RefreshCw, Layers, MessageSquare, FileText as FileIcon, ArrowRight } from 'lucide-react';
 
@@ -792,14 +792,7 @@ export default function App() {
       return;
     }
 
-    const fullText = getWritableSections(activeSession.toc)
-      .map((section) => {
-        const statusIcon = section.status === 'completed' ? '✅' : '📝';
-        const titleLine = `## ${getSectionDisplayLabel(section, activeSession.toc)} [${statusIcon}]\n\n`;
-        const bodyContent = section.content || '*작성 대기 중인 섹션입니다. AI와 채팅을 통해 이 섹션을 채워 보세요.*';
-        return titleLine + bodyContent;
-      })
-      .join('\n\n---\n\n');
+    const fullText = buildFullWikiMarkdown(activeSession.toc);
 
     const blob = new Blob([fullText], { type: 'text/markdown;charset=utf-8;' });
     const url = URL.createObjectURL(blob);

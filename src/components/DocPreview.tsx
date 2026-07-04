@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { TocSection } from '../types';
-import { getSectionDisplayLabel, getWritableSections } from '../tocUtils';
+import { getSectionDisplayLabel, getWritableSections, buildFullWikiMarkdown } from '../tocUtils';
 import ReactMarkdown from 'react-markdown';
 import { FileText, Clipboard, Download, CheckCircle, BookOpen } from 'lucide-react';
 import TableOfContents from './TableOfContents';
@@ -38,18 +38,7 @@ export default function DocPreview({
 
   const draftContent = streamingDraft || currentSection?.content || '';
 
-  const getFullWikiContent = () => {
-    if (toc.length === 0) return '*아직 도출된 위키 문서가 없습니다.*';
-
-    return getWritableSections(toc)
-      .map((section) => {
-        const statusIcon = section.status === 'completed' ? '✅' : '📝';
-        const titleLine = `## ${getSectionDisplayLabel(section, toc)} [${statusIcon}]\n\n`;
-        const bodyContent = section.content || '*작성 대기 중인 섹션입니다. AI와 채팅을 통해 이 섹션을 채워 보세요.*';
-        return titleLine + bodyContent;
-      })
-      .join('\n\n---\n\n');
-  };
+  const fullWikiMarkdown = buildFullWikiMarkdown(toc);
 
   const copyToClipboard = async (text: string) => {
     try {
@@ -62,7 +51,7 @@ export default function DocPreview({
   };
 
   const downloadMarkdown = () => {
-    const fullText = getFullWikiContent();
+    const fullText = fullWikiMarkdown;
     const blob = new Blob([fullText], { type: 'text/markdown;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
@@ -122,7 +111,7 @@ export default function DocPreview({
         <div className="flex gap-1 shrink-0">
           <button
             id="btn-copy-doc"
-            onClick={() => copyToClipboard(activeTab === 'full' ? getFullWikiContent() : draftContent)}
+            onClick={() => copyToClipboard(activeTab === 'full' ? fullWikiMarkdown : draftContent)}
             className="p-1.5 rounded hover:bg-natural-hover text-natural-text/60 hover:text-natural-title transition cursor-pointer"
             title="마크다운 복사"
           >
@@ -225,18 +214,18 @@ export default function DocPreview({
         )}
 
         {activeTab === 'full' && (
-          <div className="flex-1 overflow-y-auto p-5 space-y-4 font-sans animate-fadeIn" id="full-wiki-tab-content">
-            <div className="flex items-center justify-between border-b border-natural-border/60 pb-2 mb-3">
+          <div className="flex-1 overflow-y-auto animate-fadeIn" id="full-wiki-tab-content">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-natural-border/60 bg-natural-card/95 backdrop-blur-sm px-5 py-2.5">
               <h2 className="text-sm font-bold text-natural-title flex items-center gap-1.5 font-serif">
-                📚 전체 기획 위키 문서 (전문)
+                📚 전체 기획 위키 문서
               </h2>
               <span className="text-[10px] font-mono text-natural-text/50">
-                총 {getWritableSections(toc).length}개 집필 섹션
+                {getWritableSections(toc).length}개 집필 섹션
               </span>
             </div>
-            
-            <div className="markdown-body bg-natural-bg/10 p-5 rounded-xl border border-natural-border text-natural-text text-xs leading-relaxed space-y-4">
-              <ReactMarkdown>{getFullWikiContent()}</ReactMarkdown>
+
+            <div className="markdown-body prose prose-stone max-w-none px-6 py-5 text-natural-text text-[13px] leading-relaxed">
+              <ReactMarkdown>{fullWikiMarkdown}</ReactMarkdown>
             </div>
           </div>
         )}

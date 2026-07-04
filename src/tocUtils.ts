@@ -286,6 +286,45 @@ export function buildTocDisplayRows(toc: TocSection[]): TocDisplayRow[] {
 export function getSectionDisplayLabel(section: TocSection, toc: TocSection[]): string {
   const rows = buildTocDisplayRows(toc);
   const row = rows.find((r) => r.id === section.id);
-  if (!row) return section.title;
+  if (!row) return stripLeadingNumber(section.title);
+  return formatSectionHeading(row);
+}
+
+/** 목차 번호 + 제목 (번호 중복 없음) */
+export function formatSectionHeading(row: TocDisplayRow): string {
   return `${row.displayNumber}. ${row.displayTitle}`;
+}
+
+/**
+ * 전체 위키를 목차 구조 그대로 마크다운 문서로 조립.
+ * - 상위(1, 2, 3) → ##, 하위(1.1, 3.2) → ###
+ * - 별도 1~N 순번 없음, 구분선(---) 없음 → MD 뷰어처럼 연속 문서
+ */
+export function buildFullWikiMarkdown(toc: TocSection[]): string {
+  if (toc.length === 0) return '*아직 도출된 위키 문서가 없습니다.*';
+
+  const rows = buildTocDisplayRows(toc);
+  const blocks: string[] = ['# 기획 위키 문서', ''];
+
+  for (const row of rows) {
+    const sec = row.originalSection;
+    const heading = formatSectionHeading(row);
+    const mdLevel = row.isSub ? '###' : '##';
+
+    if (row.isGroupHeader) {
+      blocks.push(`${mdLevel} ${heading}`, '');
+      if (sec.content?.trim()) {
+        blocks.push(sec.content.trim(), '');
+      }
+      continue;
+    }
+
+    const body = sec.content?.trim()
+      ? sec.content.trim()
+      : '*작성 대기 중인 섹션입니다. AI와 채팅을 통해 이 섹션을 채워 보세요.*';
+
+    blocks.push(`${mdLevel} ${heading}`, '', body, '');
+  }
+
+  return blocks.join('\n').trimEnd() + '\n';
 }
