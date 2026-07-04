@@ -381,6 +381,132 @@ export default function App() {
     return data;
   };
 
+  const applyModelResponseToSession = (
+    sess: BrainstormSession,
+    data: any,
+    modelMsg: ChatMessage
+  ): BrainstormSession => {
+    let updatedToc = [...(data.suggestedToc || sess.toc)];
+    const targetSectionId = data.currentSectionId || sess.currentSectionId;
+
+    if (targetSectionId && (data.updatedContent || data.critique)) {
+      updatedToc = updatedToc.map((sec) => {
+        if (sec.id === targetSectionId) {
+          return {
+            ...sec,
+            content: data.updatedContent !== undefined ? data.updatedContent : sec.content,
+            feedback: data.critique !== undefined ? data.critique : sec.feedback,
+            status: sec.status === 'pending' ? ('writing' as const) : sec.status,
+          };
+        }
+        return sec;
+      });
+    }
+
+    return {
+      ...sess,
+      history: [...sess.history, modelMsg],
+      toc: updatedToc,
+      status: data.sessionStatus || sess.status,
+      currentSectionId: data.currentSectionId || sess.currentSectionId,
+      updatedAt: new Date().toISOString(),
+    };
+  };
+
+  const buildSectionDraftPrompt = (section: TocSection) =>
+    `[자동 집필 시작] "${section.title}" 섹션 집필을 지금 시작해 주세요. currentSectionId는 "${section.id}"로 설정하고, updatedContent에 이 섹션의 전문적인 마크다운 초안을, critique에 맥킨지 스타일 비평을 반드시 함께 작성해 주세요. 하위 목차(1.1, 1.2 등)가 있다면 1.1부터 순서대로 집필하세요. reply에는 짧게 이 섹션 집필을 시작한다고 안내해 주세요.`;
+
+  const executeChatRound = async (session: BrainstormSession, text: string) => {
+    setIsLoading(true);
+    setErrorMessage(null);
+    setRealTimeProgress({
+      reasoning: '',
+      reply: '',
+      updatedContent: '',
+      critique: '',
+      currentActiveField: 'none',
+    });
+
+    const userMsg: ChatMessage = {
+      id: `msg_user_${Date.now()}`,
+      role: 'user',
+      text,
+      timestamp: new Date().toISOString(),
+      type: 'chat',
+    };
+
+    const sessionWithUser: BrainstormSession = {
+      ...session,
+      history: [...session.history, userMsg],
+      updatedAt: new Date().toISOString(),
+    };
+
+    setSessions((prev) => prev.map((s) => (s.id === session.id ? sessionWithUser : s)));
+
+    const startTime = Date.now();
+
+    try {
+      const data = await streamChat(sessionWithUser, text);
+      const elapsed = (Date.now() - startTime) / 1000;
+
+      if (data.modelUsed) {
+        setModelSettings((prev) => ({
+          ...prev,
+          models: prev.models.map((m) =>
+            m.id === data.modelUsed ? { ...m, used: (m.used || 0) + 1 } : m
+          ),
+        }));
+      }
+
+      const modelMsg: ChatMessage = {
+        id: `msg_model_${Date.now()}`,
+        role: 'model',
+        text: data.reply,
+        timestamp: new Date().toISOString(),
+        type: 'chat',
+        reasoning: data.reasoning,
+        reasoningTime: elapsed,
+        contextTokens: data.contextTokens,
+        contextLimit: data.contextLimit,
+        outputTokens: data.outputTokens,
+        outputTokenLimit: data.outputTokenLimit,
+        modelUsed: data.modelUsed,
+      };
+
+      let nextSession: BrainstormSession | null = null;
+
+      setSessions((prev) =>
+        prev.map((sess) => {
+          if (sess.id !== session.id) return sess;
+          const updated = applyModelResponseToSession(sess, data, modelMsg);
+          nextSession = updated;
+          return updated;
+        })
+      );
+
+      return { data, nextSession };
+    } catch (err: any) {
+      console.error(err);
+      setErrorMessage('답변을 처리하는 도중 서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.');
+      return null;
+    } finally {
+      setIsLoading(false);
+      setRealTimeProgress({
+        reasoning: '',
+        reply: '',
+        updatedContent: '',
+        critique: '',
+        currentActiveField: 'none',
+      });
+    }
+  };
+
+  const triggerSectionDraft = async (session: BrainstormSession, section: TocSection) => {
+    if (isLoading || !section) return;
+    setMobileActiveTab('doc');
+    await executeChatRound(session, buildSectionDraftPrompt(section));
+  };
+
   // 4. Create new Brainstorming Session
   const handleCreateSession = async (rawIdea: string) => {
     setIsLoading(true);
@@ -484,119 +610,32 @@ export default function App() {
   const handleSendMessage = async (text: string) => {
     if (!activeSession || isLoading) return;
 
-    // Check if user is typing "확정" or "저장" to confirm current active section
     const trimmedText = text.trim();
     if ((trimmedText === '확정' || trimmedText === '저장') && activeSession.currentSectionId) {
-      handleConfirmSection();
+      await handleConfirmSection();
       return;
     }
 
-    setIsLoading(true);
-    setErrorMessage(null);
-    setRealTimeProgress({
-      reasoning: '',
-      reply: '',
-      updatedContent: '',
-      critique: '',
-      currentActiveField: 'none'
-    });
+    const result = await executeChatRound(activeSession, text);
+    if (!result?.data || !result.nextSession) return;
 
-    // Create user message
-    const userMsg: ChatMessage = {
-      id: `msg_user_${Date.now()}`,
-      role: 'user',
-      text: text,
-      timestamp: new Date().toISOString(),
-      type: 'chat'
-    };
+    const { data, nextSession } = result;
+    const targetId = nextSession.currentSectionId;
+    let targetSection = targetId ? nextSession.toc.find((s) => s.id === targetId) : null;
+    if (!targetSection && nextSession.toc.length > 0) {
+      targetSection = nextSession.toc.find((s) => s.status !== 'completed') || nextSession.toc[0];
+    }
+    const justGotToc = (data.suggestedToc?.length || 0) > 0 && activeSession.toc.length === 0;
+    const startedWriting =
+      activeSession.status !== 'writing' && nextSession.status === 'writing';
+    const needsAutoDraft =
+      targetSection &&
+      !targetSection.content &&
+      !data.updatedContent &&
+      (justGotToc || startedWriting);
 
-    // Optimistically update session history locally
-    const updatedSessionWithUser: BrainstormSession = {
-      ...activeSession,
-      history: [...activeSession.history, userMsg],
-      updatedAt: new Date().toISOString()
-    };
-
-    setSessions(prev => prev.map(s => s.id === activeSession.id ? updatedSessionWithUser : s));
-
-    const startTime = Date.now();
-
-    try {
-      const data = await streamChat(updatedSessionWithUser, text);
-      const elapsed = (Date.now() - startTime) / 1000;
-
-      // Update model usage tracker based on actual model used by server
-      if (data.modelUsed) {
-        setModelSettings(prev => {
-          const updatedModels = prev.models.map(m => {
-            if (m.id === data.modelUsed) {
-              return { ...m, used: (m.used || 0) + 1 };
-            }
-            return m;
-          });
-          return { ...prev, models: updatedModels };
-        });
-      }
-
-      const modelMsg: ChatMessage = {
-        id: `msg_model_${Date.now()}`,
-        role: 'model',
-        text: data.reply,
-        timestamp: new Date().toISOString(),
-        type: 'chat',
-        reasoning: data.reasoning,
-        reasoningTime: elapsed,
-        contextTokens: data.contextTokens,
-        contextLimit: data.contextLimit,
-        outputTokens: data.outputTokens,
-        outputTokenLimit: data.outputTokenLimit,
-        modelUsed: data.modelUsed
-      };
-
-      setSessions(prev => prev.map(sess => {
-        if (sess.id === activeSession.id) {
-          // If updatedContent is present, we update the focused section in TOC
-          let updatedToc = [...(data.suggestedToc || sess.toc)];
-          
-          const targetSectionId = data.currentSectionId || sess.currentSectionId;
-          if (targetSectionId && (data.updatedContent || data.critique)) {
-            updatedToc = updatedToc.map(sec => {
-              if (sec.id === targetSectionId) {
-                return {
-                  ...sec,
-                  content: data.updatedContent !== undefined ? data.updatedContent : sec.content,
-                  feedback: data.critique !== undefined ? data.critique : sec.feedback,
-                  status: sec.status === 'pending' ? 'writing' : sec.status
-                };
-              }
-              return sec;
-            });
-          }
-
-          return {
-            ...sess,
-            history: [...sess.history, modelMsg],
-            toc: updatedToc,
-            status: data.sessionStatus || sess.status,
-            currentSectionId: data.currentSectionId || sess.currentSectionId,
-            updatedAt: new Date().toISOString()
-          };
-        }
-        return sess;
-      }));
-
-    } catch (err: any) {
-      console.error(err);
-      setErrorMessage("답변을 처리하는 도중 서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
-    } finally {
-      setIsLoading(false);
-      setRealTimeProgress({
-        reasoning: '',
-        reply: '',
-        updatedContent: '',
-        critique: '',
-        currentActiveField: 'none'
-      });
+    if (needsAutoDraft && targetSection) {
+      await triggerSectionDraft(nextSession, targetSection);
     }
   };
 
@@ -652,65 +691,65 @@ export default function App() {
   };
 
   // 9. Confirm / Save current Section to Wiki
-  const handleConfirmSection = () => {
-    if (!activeSession || !activeSession.currentSectionId) return;
+  const handleConfirmSection = async () => {
+    if (!activeSession || !activeSession.currentSectionId || isLoading) return;
 
     const currentSecId = activeSession.currentSectionId;
-    const currentSection = activeSession.toc.find(s => s.id === currentSecId);
+    const currentSection = activeSession.toc.find((s) => s.id === currentSecId);
     if (!currentSection) return;
 
-    setSessions(prev => prev.map(sess => {
-      if (sess.id === activeSession.id) {
-        // Mark current section completed
-        const updatedToc = sess.toc.map(sec => {
-          if (sec.id === currentSecId) {
-            return { ...sec, status: 'completed' as const };
-          }
-          return sec;
-        });
+    const updatedToc = activeSession.toc.map((sec) =>
+      sec.id === currentSecId ? { ...sec, status: 'completed' as const } : sec
+    );
 
-        // Automatically find next non-completed section
-        const nextSec = updatedToc.find(sec => sec.status !== 'completed');
-        const nextSecId = nextSec ? nextSec.id : null;
-        
-        // Push alert message
-        const confirmAlert: ChatMessage = {
-          id: `confirm_${Date.now()}`,
+    const nextSec = updatedToc.find((sec) => sec.status !== 'completed');
+    const nextSecId = nextSec ? nextSec.id : null;
+
+    const confirmAlert: ChatMessage = {
+      id: `confirm_${Date.now()}`,
+      role: 'system',
+      text: `[확정 및 저장] '${currentSection.title}' 섹션이 성공적으로 기획 위키에 영구 저장되었습니다.`,
+      timestamp: new Date().toISOString(),
+      type: 'system_alert',
+    };
+
+    const nextAlert: ChatMessage = nextSec
+      ? {
+          id: `next_${Date.now()}`,
           role: 'system',
-          text: `[확정 및 저장] '${currentSection.title}' 섹션이 성공적으로 기획 위키에 영구 저장되었습니다.`,
+          text: `[다음 단계 진입] 다음 섹션인 '${nextSec.title}' 집필을 시작합니다.`,
           timestamp: new Date().toISOString(),
-          type: 'system_alert'
-        };
-
-        let nextAlert: ChatMessage | null = null;
-        if (nextSec) {
-          nextAlert = {
-            id: `next_${Date.now()}`,
-            role: 'system',
-            text: `[다음 단계 진입] 다음 섹션인 '${nextSec.title}' 집필 방향으로 이동합니다.`,
-            timestamp: new Date().toISOString(),
-            type: 'system_alert'
-          };
-        } else {
-          nextAlert = {
-            id: `next_${Date.now()}`,
-            role: 'system',
-            text: `🎉 모든 기획서 섹션이 완성되었습니다! 전체 기획 위키 탭을 확인하고 문서를 복사 또는 다운로드해 보세요.`,
-            timestamp: new Date().toISOString(),
-            type: 'system_alert'
-          };
+          type: 'system_alert',
         }
-
-        return {
-          ...sess,
-          toc: updatedToc,
-          currentSectionId: nextSecId,
-          status: nextSec ? 'writing' as const : 'completed' as const,
-          history: [...sess.history, confirmAlert, nextAlert]
+      : {
+          id: `next_${Date.now()}`,
+          role: 'system',
+          text: '🎉 모든 기획서 섹션이 완성되었습니다! 전체 기획 위키 탭을 확인하고 문서를 복사 또는 다운로드해 보세요.',
+          timestamp: new Date().toISOString(),
+          type: 'system_alert',
         };
-      }
-      return sess;
-    }));
+
+    const tocWithNextWriting = nextSecId
+      ? updatedToc.map((sec) =>
+          sec.id === nextSecId ? { ...sec, status: 'writing' as const } : sec
+        )
+      : updatedToc;
+
+    const updatedSession: BrainstormSession = {
+      ...activeSession,
+      toc: tocWithNextWriting,
+      currentSectionId: nextSecId,
+      status: nextSec ? ('writing' as const) : ('completed' as const),
+      history: [...activeSession.history, confirmAlert, nextAlert],
+      updatedAt: new Date().toISOString(),
+    };
+
+    setSessions((prev) => prev.map((sess) => (sess.id === activeSession.id ? updatedSession : sess)));
+    setMobileActiveTab('doc');
+
+    if (nextSec && nextSecId && !nextSec.content) {
+      await triggerSectionDraft(updatedSession, { ...nextSec, status: 'writing' });
+    }
   };
 
   const handleDownloadWiki = () => {
