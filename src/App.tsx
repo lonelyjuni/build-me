@@ -522,13 +522,20 @@ export default function App() {
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
+      let errMessage = res.statusText;
+      try {
+        const errJson = JSON.parse(errText);
+        if (errJson.error) errMessage = errJson.error;
+      } catch {
+        if (errText) errMessage = errText.slice(0, 200);
+      }
       clientDevLog(
         'chat.client',
         'Stream HTTP error',
         { status: res.status, statusText: res.statusText, body: errText.slice(0, 500) },
         'error'
       );
-      throw new Error(`API Error: ${res.statusText}`);
+      throw new Error(`API Error: ${errMessage}`);
     }
 
     const reader = res.body?.getReader();
@@ -1125,8 +1132,17 @@ ${body}`;
 
     } catch (err: any) {
       console.error(err);
-      setErrorMessage("서버와 연동하는 도중 오류가 발생했습니다. 환경설정에 GEMINI_API_KEY가 정상 등록되어 있는지 확인해주세요.");
+      const detail = err?.message ? String(err.message) : '알 수 없는 오류';
+      const isGemini = modelSettings.activeProvider === 'gemini';
+      setErrorMessage(
+        detail.includes('API Error') || detail.includes('AI 응답')
+          ? detail.replace(/^API Error:\s*/, '')
+          : isGemini
+            ? '서버와 연동하는 도중 오류가 발생했습니다. 환경설정에 GEMINI_API_KEY가 정상 등록되어 있는지 확인해주세요.'
+            : `서버와 연동하는 도중 오류가 발생했습니다. (${detail})`
+      );
     } finally {
+
       setIsLoading(false);
       setRealTimeProgress({
         reasoning: '',
