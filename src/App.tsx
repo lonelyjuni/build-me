@@ -2064,10 +2064,10 @@ ${body}`;
                 <div className="bg-natural-bg border border-natural-border p-3.5 rounded-xl flex flex-col gap-2">
                   <div className="flex items-center gap-1.5">
                     <span className="text-xs">🔐</span>
-                    <h3 className="text-xs font-bold text-natural-title">Cline Pass OAuth 인증</h3>
+                    <h3 className="text-xs font-bold text-natural-title">Cline Pass 토큰 인증</h3>
                   </div>
                   <p className="text-[9.5px] text-natural-text/70 leading-normal">
-                    Cline(cline.bot) 계정으로 OAuth 로그인하여 구독 모델(Qwen3.7 Plus 등)을 사용합니다. API 키 대신 Google 로그인 토큰을 사용하며, 추론은 xhigh 로 설정됩니다.
+                    Cline(cline.bot) 구독 모델(Qwen3.7 Plus 등)을 사용합니다. Cline 계정 토큰을 아래에 붙여넣으면 바로 사용할 수 있습니다.
                   </p>
                   <label className="text-[10px] font-semibold text-natural-text/60">Base URL</label>
                   <input
@@ -2084,7 +2084,7 @@ ${body}`;
                   />
                   <div className="flex items-center gap-2 mt-2">
                     <span className={`text-[10px] font-semibold ${modelSettings.clinePass.isAuthenticated ? 'text-emerald-600' : 'text-amber-600'}`}>
-                      {modelSettings.clinePass.isAuthenticated ? '✅ 인증됨' : '⚠️ 미인증'}
+                      {modelSettings.clinePass.isAuthenticated ? '✅ 인증됨' : '⚠️ 토큰 필요'}
                     </span>
                     {modelSettings.clinePass.isAuthenticated && modelSettings.clinePass.tokenExpiresAt > 0 && (
                       <span className="text-[9px] text-natural-text/50 font-mono">
@@ -2092,61 +2092,15 @@ ${body}`;
                       </span>
                     )}
                   </div>
-                  <div className="flex gap-1.5 mt-1">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const callbackUrl = `${window.location.origin}/api/cline-pass/auth/callback`;
-                        try {
-                          const res = await fetch('/api/cline-pass/auth/start', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ callbackUrl }),
-                          });
-                          if (res.ok) {
-                            const data = await res.json();
-                            if (data.authUrl) {
-                              window.open(data.authUrl, '_blank', 'width=600,height=700');
-                            }
-                          } else {
-                            const err = await res.json().catch(() => ({}));
-                            alert(err.error || '인증 URL 생성 실패');
-                          }
-                        } catch (err: any) {
-                          alert('인증 시작 실패: ' + (err.message || '알 수 없는 오류'));
-                        }
-                      }}
-                      className="px-3 py-1.5 bg-natural-accent hover:bg-natural-accent-hover text-white text-[10px] font-bold rounded-lg cursor-pointer shadow-sm transition-all"
-                    >
-                      Cline으로 로그인
-                    </button>
-                    {modelSettings.clinePass.isAuthenticated && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await fetch('/api/cline-pass/auth/logout', { method: 'POST' });
-                            setModelSettings((prev) => ({
-                              ...prev,
-                              clinePass: { ...prev.clinePass, isAuthenticated: false, tokenExpiresAt: 0 },
-                            }));
-                          } catch (err) {
-                            alert('로그아웃 실패');
-                          }
-                        }}
-                        className="px-3 py-1.5 border border-natural-border hover:bg-natural-hover text-natural-text text-[10px] font-semibold rounded-lg cursor-pointer"
-                      >
-                        로그아웃
-                      </button>
-                    )}
-                  </div>
+
+                  {/* 토큰 입력 */}
                   <div className="mt-2">
                     <label className="text-[10px] font-semibold text-natural-text/60 block mb-1">
-                      수동 토큰 입력 (선택사항 — OAuth 콜백이 안 될 때)
+                      Cline 계정 토큰 붙여넣기
                     </label>
                     <input
                       type="text"
-                      placeholder="refreshToken 또는 idToken 붙여넣기"
+                      placeholder="refreshToken 또는 idToken을 붙여넣고 Enter"
                       className="w-full bg-natural-card border border-natural-border rounded-xl px-3 py-1.5 text-[10px] text-natural-title font-mono focus:outline-none focus:ring-1 focus:ring-natural-accent"
                       onKeyDown={async (e) => {
                         if (e.key === 'Enter') {
@@ -2182,6 +2136,40 @@ ${body}`;
                     />
                     <p className="text-[9px] text-natural-text/50 mt-1">Enter를 눌러 저장</p>
                   </div>
+
+                  {/* 토큰 얻는 방법 안내 */}
+                  <div className="mt-2 bg-amber-50/50 border border-amber-200/60 rounded-lg p-2.5">
+                    <p className="text-[9px] font-semibold text-amber-700 mb-1">💡 토큰은 어디서 얻나요?</p>
+                    <ol className="text-[9px] text-natural-text/70 leading-relaxed list-decimal list-inside space-y-0.5">
+                      <li>VS Code 또는 Cursor에 Cline 확장을 설치하고 로그인</li>
+                      <li>VS Code: <b>Ctrl+Shift+P</b> → "Cline: Open Settings" → 개발자 도구(F12) → Console에서 <code>clineAccountId</code> 또는 토큰 값 확인</li>
+                      <li>또는 Cursor/Cline 확장 설정 파일에서 인증 토큰 복사</li>
+                      <li>위 입력란에 붙여넣고 Enter</li>
+                    </ol>
+                    <p className="text-[9px] text-natural-text/50 mt-1.5">
+                      Cline OAuth는 IDE 확장 전용으로 설계되어 있어 웹브라우저에서 직접 로그인이 불가능합니다.
+                    </p>
+                  </div>
+
+                  {modelSettings.clinePass.isAuthenticated && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await fetch('/api/cline-pass/auth/logout', { method: 'POST' });
+                          setModelSettings((prev) => ({
+                            ...prev,
+                            clinePass: { ...prev.clinePass, isAuthenticated: false, tokenExpiresAt: 0 },
+                          }));
+                        } catch (err) {
+                          alert('로그아웃 실패');
+                        }
+                      }}
+                      className="mt-2 px-3 py-1.5 border border-natural-border hover:bg-natural-hover text-natural-text text-[10px] font-semibold rounded-lg cursor-pointer"
+                    >
+                      로그아웃 (토큰 삭제)
+                    </button>
+                  )}
                 </div>
 
                 <div className="flex flex-col gap-2.5">
