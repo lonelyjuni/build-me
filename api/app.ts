@@ -12,6 +12,21 @@ import {
   sanitizeCursorModelId,
   streamCursorProxyChat,
 } from "./cursorProxyClient.js";
+import {
+  CLINE_PASS_DEFAULT_BASE_URL,
+  CLINE_PASS_DEFAULT_MODEL,
+  CLINE_PASS_CONTEXT_LIMIT,
+  CLINE_PASS_MODELS,
+  buildAuthUrl as buildClinePassAuthUrl,
+  buildOpenAIMessagesForClinePass,
+  ensureFreshToken as ensureFreshClinePassToken,
+  getClinePassModels,
+  parseCallbackToken as parseClinePassCallbackToken,
+  refreshClinePassToken,
+  sanitizeClinePassModelId,
+  streamClinePassChat,
+  type ClinePassTokenSet,
+} from "./clinePassClient.js";
 
 // Load environment variables (.env.local first, then .env)
 dotenv.config({ path: ".env.local" });
@@ -65,10 +80,14 @@ let globalSettings = {
   routingEnabled: true,
   selectedModelId: "gemma-4-31b",
   adminPassword: process.env.BUILDME_ADMIN_PASSWORD || "admin",
-  activeProvider: (process.env.BUILDME_LLM_PROVIDER as "gemini" | "cursor-proxy") || "gemini",
+  activeProvider: (process.env.BUILDME_LLM_PROVIDER as "gemini" | "cursor-proxy" | "cline-pass") || "gemini",
   cursorProxyBaseUrl: CURSOR_PROXY_DEFAULT_BASE_URL,
   cursorProxyApiKey: "",
   cursorSelectedModelId: CURSOR_PROXY_DEFAULT_MODEL,
+  // Cline Pass (OAuth)
+  clinePassBaseUrl: CLINE_PASS_DEFAULT_BASE_URL,
+  clinePassTokenSet: null as ClinePassTokenSet | null,
+  clinePassSelectedModelId: "cline-pass/qwen-3.7-plus",
 };
 
 function getCursorProxyApiKey(): string {
@@ -378,6 +397,12 @@ app.get("/api/admin/settings", (req, res) => {
       hasApiKey: !!cursorKey,
       maskedApiKey: maskedCursorKey,
     },
+    clinePass: {
+      baseUrl: globalSettings.clinePassBaseUrl,
+      selectedModelId: sanitizeClinePassModelId(globalSettings.clinePassSelectedModelId),
+      isAuthenticated: !!globalSettings.clinePassTokenSet,
+      tokenExpiresAt: globalSettings.clinePassTokenSet?.expiresAt || 0,
+    },
   });
 });
 
@@ -391,6 +416,8 @@ app.post("/api/admin/settings", (req, res) => {
     cursorProxyBaseUrl,
     cursorProxyApiKey,
     cursorSelectedModelId,
+    clinePassBaseUrl,
+    clinePassSelectedModelId,
   } = req.body;
 
   if (!isValidAdminPassword(password)) {
@@ -413,7 +440,7 @@ app.post("/api/admin/settings", (req, res) => {
     globalSettings.selectedModelId = selectedModelId;
   }
 
-  if (activeProvider === "gemini" || activeProvider === "cursor-proxy") {
+  if (activeProvider === "gemini" || activeProvider === "cursor-proxy" || activeProvider === "cline-pass") {
     globalSettings.activeProvider = activeProvider;
   }
 
@@ -432,7 +459,110 @@ app.post("/api/admin/settings", (req, res) => {
     globalSettings.cursorSelectedModelId = sanitizeCursorModelId(String(cursorSelectedModelId));
   }
 
+  // Cline Pass settings (baseUrl, model only — 토큰은 OAuth 엔드포인트로만 설정)
+  if (clinePassBaseUrl !== undefined && String(clinePassBaseUrl).trim()) {
+    globalSettings.clinePassBaseUrl = String(clinePassBaseUrl).trim();
+  }
+
+  if (clinePassSelectedModelId !== undefined) {
+    globalSettings.clinePassSelectedModelId = sanitizeClinePassModelId(String(clinePassSelectedModelId));
+  }
+
   res.json({ success: true, message: "설정이 저장되었습니다." });
+});
+
+// ===== Cline Pass OAuth 엔드포인트 =====
+
+/**
+ * Cline Pass 인증 시작 URL 반환.
+ * 프론트엔드가 이 URL 을 새 창으로 열면 Google 로그인 → 콜백 으로 리다이렉트.
+ */
+app.post("/api/cline-pass/auth/start", (req, res) => {
+  const { callbackUrl } = req.body || {};
+  const cb = String(callbackUrl || "").trim();
+  if (!cb) {
+    return res.status(400).json({ error: "callbackUrl 이 필요합니다." });
+  }
+  try {
+    const authUrl = buildClinePassAuthUrl(globalSettings.clinePassBaseUrl, cb);
+    res.json({ authUrl });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "인증 URL 생성 실패" });
+  }
+});
+
+/**
+ * Cline Pass OAuth 콜백 처리.
+ * Cline 이 리다이렉트할 때 refreshToken/idToken/code 파라미터를 보내므로
+ * 프론트엔드가 이 값을 POST 로 전달한다.
+ */
+app.post("/api/cline-pass/auth/callback", (req, res) => {
+  const { refreshToken, idToken, code } = req.body || {};
+  const params = new URLSearchParams();
+  if (refreshToken) params.set("refreshToken", String(refreshToken));
+  if (idToken) params.set("idToken", String(idToken));
+  if (code) params.set("code", String(code));
+
+  const tokenSet = parseClinePassCallbackToken(params);
+  if (!tokenSet) {
+    return res.status(400).json({ error: "유효한 토큰이 없습니다. refreshToken/idToken/code 중 하나가 필요합니다." });
+  }
+
+  globalSettings.clinePassTokenSet = tokenSet;
+  devLog("chat.model", "Cline Pass token stored", {
+    expiresAt: tokenSet.expiresAt,
+    hasRefreshToken: !!tokenSet.refreshToken,
+  });
+
+  res.json({
+    success: true,
+    isAuthenticated: true,
+    tokenExpiresAt: tokenSet.expiresAt,
+  });
+});
+
+/**
+ * Cline Pass 인증 해제 (로그아웃).
+ */
+app.post("/api/cline-pass/auth/logout", (_req, res) => {
+  globalSettings.clinePassTokenSet = null;
+  res.json({ success: true, message: "Cline Pass 인증이 해제되었습니다." });
+});
+
+/**
+ * Cline Pass 토큰 수동 갱신.
+ */
+app.post("/api/cline-pass/auth/refresh", async (_req, res) => {
+  try {
+    const tokenSet = globalSettings.clinePassTokenSet;
+    if (!tokenSet || !tokenSet.refreshToken) {
+      return res.status(400).json({ error: "갱신할 토큰이 없습니다. 먼저 인증해 주세요." });
+    }
+    const refreshed = await refreshClinePassToken(globalSettings.clinePassBaseUrl, tokenSet.refreshToken);
+    globalSettings.clinePassTokenSet = refreshed;
+    res.json({ success: true, tokenExpiresAt: refreshed.expiresAt });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message || "토큰 갱신 실패" });
+  }
+});
+
+/**
+ * Cline Pass 모델 목록 (정적 카탈로그).
+ */
+app.get("/api/cline-pass/models", (_req, res) => {
+  res.json({ models: getClinePassModels() });
+});
+
+/**
+ * Cline Pass 인증 상태 확인.
+ */
+app.get("/api/cline-pass/status", (_req, res) => {
+  res.json({
+    isAuthenticated: !!globalSettings.clinePassTokenSet,
+    tokenExpiresAt: globalSettings.clinePassTokenSet?.expiresAt || 0,
+    baseUrl: globalSettings.clinePassBaseUrl,
+    selectedModelId: sanitizeClinePassModelId(globalSettings.clinePassSelectedModelId),
+  });
 });
 
 // Chat brainstorming endpoint
@@ -465,7 +595,7 @@ app.post("/api/chat", async (req, res) => {
     });
 
     const resolvedProvider =
-      llmProvider === "cursor-proxy" || llmProvider === "gemini"
+      llmProvider === "cursor-proxy" || llmProvider === "gemini" || llmProvider === "cline-pass"
         ? llmProvider
         : globalSettings.activeProvider;
 
@@ -573,6 +703,10 @@ app.post("/api/chat", async (req, res) => {
       return res.status(400).json({ error: "Cursor Proxy API 키가 설정되지 않았습니다." });
     }
 
+    if (resolvedProvider === "cline-pass" && !globalSettings.clinePassTokenSet) {
+      return res.status(400).json({ error: "Cline Pass 인증이 필요합니다. 설정에서 Cline 계정으로 로그인해 주세요." });
+    }
+
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -652,6 +786,91 @@ app.post("/api/chat", async (req, res) => {
           res.end();
         } else {
           res.status(500).json({ error: cursorErr?.message || "Cursor Proxy error" });
+        }
+        return;
+      }
+    }
+
+    // ===== Cline Pass 채팅 분기 =====
+    if (resolvedProvider === "cline-pass") {
+      const tokenSet = globalSettings.clinePassTokenSet!;
+      const clineModel = sanitizeClinePassModelId(globalSettings.clinePassSelectedModelId);
+      const clineBase = globalSettings.clinePassBaseUrl;
+
+      // 토큰 만료 임박 시 자동 갱신
+      let freshToken = tokenSet;
+      try {
+        freshToken = await ensureFreshClinePassToken(clineBase, tokenSet);
+        if (freshToken !== tokenSet) {
+          globalSettings.clinePassTokenSet = freshToken;
+        }
+      } catch (refreshErr: any) {
+        devLog("chat.error", "Cline Pass token refresh failed", { error: refreshErr?.message }, "warn");
+      }
+
+      writeStatus({
+        phase: "model_attempt",
+        model: clineModel,
+        attempt: 1,
+        total: 1,
+        fallback: false,
+        provider: "cline-pass",
+      });
+
+      const openAIMessages = buildOpenAIMessagesForClinePass(systemInstruction, contents);
+
+      try {
+        const result = await streamClinePassChat({
+          baseUrl: clineBase,
+          idToken: freshToken.idToken,
+          model: clineModel,
+          messages: openAIMessages,
+          onChunk: (text) => {
+            res.write(JSON.stringify({ type: "chunk", text }) + "\n");
+          },
+        });
+
+        writeStatus({ phase: "streaming", model: result.modelUsed, provider: "cline-pass" });
+
+        res.write(
+          JSON.stringify({
+            type: "metadata",
+            modelUsed: `clinepass:${result.modelUsed}`,
+            apiModelId: result.modelUsed,
+            fallbackOccurred: false,
+            contextTokens: result.promptTokens,
+            contextLimit: CLINE_PASS_CONTEXT_LIMIT,
+            outputTokens: result.completionTokens,
+            provider: "cline-pass",
+          }) + "\n"
+        );
+
+        devLog("chat.response", "Cline Pass stream completed", {
+          sessionId: chatSessionId,
+          durationMs: Date.now() - chatStartedAt,
+          modelUsed: result.modelUsed,
+          responseChars: result.fullText.length,
+        });
+
+        res.end();
+        return;
+      } catch (clineErr: any) {
+        devLog(
+          "chat.error",
+          "Cline Pass chat failed",
+          { error: clineErr?.message, sessionId: chatSessionId },
+          "error"
+        );
+        if (res.headersSent) {
+          res.write(
+            JSON.stringify({
+              type: "error",
+              message: clineErr?.message || "Cline Pass error",
+            }) + "\n"
+          );
+          res.end();
+        } else {
+          res.status(500).json({ error: clineErr?.message || "Cline Pass error" });
         }
         return;
       }

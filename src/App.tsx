@@ -121,8 +121,15 @@ export default function App() {
       selectedModelId: 'composer-2.5',
       models: [],
     },
+    clinePass: {
+      baseUrl: 'https://api.cline.bot',
+      selectedModelId: 'cline-pass/qwen-3.7-plus',
+      models: [],
+      isAuthenticated: false,
+      tokenExpiresAt: 0,
+    },
   });
-  const [settingsTab, setSettingsTab] = useState<'gemini' | 'cursor-proxy'>('gemini');
+  const [settingsTab, setSettingsTab] = useState<'gemini' | 'cursor-proxy' | 'cline-pass'>('gemini');
   const [cursorProxyApiKey, setCursorProxyApiKey] = useState('');
   const [serverMaskedCursorApiKey, setServerMaskedCursorApiKey] = useState('');
   const [serverHasCursorApiKey, setServerHasCursorApiKey] = useState(false);
@@ -262,6 +269,22 @@ export default function App() {
               loadCursorModelsFromApi();
             }
           }
+          if (data.clinePass) {
+            setModelSettings((prev) => ({
+              ...prev,
+              clinePass: {
+                ...prev.clinePass,
+                baseUrl: data.clinePass.baseUrl || prev.clinePass.baseUrl,
+                selectedModelId: data.clinePass.selectedModelId || 'cline-pass/glm-5.2',
+                isAuthenticated: !!data.clinePass.isAuthenticated,
+                tokenExpiresAt: data.clinePass.tokenExpiresAt || 0,
+              },
+            }));
+            // Cline Pass 모델 목록 로드 (정적 카탈로그)
+            if (data.clinePass.isAuthenticated) {
+              loadClinePassModels();
+            }
+          }
         }
       } catch (err) {
         console.error("Failed to load server config:", err);
@@ -270,6 +293,32 @@ export default function App() {
     loadServerConfig();
     loadModelsFromApi();
   }, []);
+
+  const loadClinePassModels = async () => {
+    try {
+      const res = await fetch('/api/cline-pass/models');
+      if (res.ok) {
+        const data = await res.json();
+        const models: ModelConfig[] = (data.models || []).map((m: { id: string; name?: string; description?: string; inputTokenLimit?: number; outputTokenLimit?: number }) => ({
+          id: m.id,
+          name: m.name || m.id,
+          description: m.description || 'Cline Pass',
+          inputTokenLimit: m.inputTokenLimit ?? 202_752,
+          outputTokenLimit: m.outputTokenLimit ?? 0,
+          used: 0,
+        }));
+        setModelSettings((prev) => ({
+          ...prev,
+          clinePass: {
+            ...prev.clinePass,
+            models,
+          },
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to load Cline Pass models:', err);
+    }
+  };
 
   const handleAdminLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -309,11 +358,19 @@ export default function App() {
               baseUrl: data.cursorProxy?.baseUrl || prev.cursorProxy.baseUrl,
               selectedModelId: data.cursorProxy?.selectedModelId || 'composer-2.5',
             },
+            clinePass: {
+              ...prev.clinePass,
+              baseUrl: data.clinePass?.baseUrl || prev.clinePass.baseUrl,
+              selectedModelId: data.clinePass?.selectedModelId || 'cline-pass/glm-5.2',
+              isAuthenticated: !!data.clinePass?.isAuthenticated,
+              tokenExpiresAt: data.clinePass?.tokenExpiresAt || 0,
+            },
           }));
         }
         setIsAdminAuthenticated(true);
         loadModelsFromApi();
         if (data.cursorProxy?.hasApiKey) loadCursorModelsFromApi();
+        if (data.clinePass?.isAuthenticated) loadClinePassModels();
       } else {
         const errData = await res.json().catch(() => ({}));
         setAdminError(errData.error || '비밀번호가 올바르지 않습니다. (기본값: admin)');
@@ -339,6 +396,8 @@ export default function App() {
           cursorProxyBaseUrl: modelSettings.cursorProxy.baseUrl,
           cursorProxyApiKey: cursorProxyApiKey,
           cursorSelectedModelId: modelSettings.cursorProxy.selectedModelId,
+          clinePassBaseUrl: modelSettings.clinePass.baseUrl,
+          clinePassSelectedModelId: modelSettings.clinePass.selectedModelId,
         })
       });
       
@@ -887,10 +946,15 @@ ${body}`;
 
       if (data.modelUsed) {
         const isCursor = data.modelUsed.startsWith('cursor:');
-        const rawId = isCursor ? data.modelUsed.replace(/^cursor:/, '') : data.modelUsed;
+        const isClinePass = data.modelUsed.startsWith('clinepass:');
+        const rawId = isCursor
+          ? data.modelUsed.replace(/^cursor:/, '')
+          : isClinePass
+            ? data.modelUsed.replace(/^clinepass:/, '')
+            : data.modelUsed;
         setModelSettings((prev) => ({
           ...prev,
-          models: isCursor
+          models: isCursor || isClinePass
             ? prev.models
             : prev.models.map((m) =>
                 m.id === rawId ? { ...m, used: (m.used || 0) + 1 } : m
@@ -903,6 +967,14 @@ ${body}`;
                 ),
               }
             : prev.cursorProxy,
+          clinePass: isClinePass
+            ? {
+                ...prev.clinePass,
+                models: prev.clinePass.models.map((m) =>
+                  m.id === rawId ? { ...m, used: (m.used || 0) + 1 } : m
+                ),
+              }
+            : prev.clinePass,
         }));
       }
 
@@ -1638,7 +1710,7 @@ ${body}`;
                 {/* Active provider for chat */}
                 <div className="bg-natural-bg border border-natural-border p-3 rounded-xl flex flex-col gap-2">
                   <h3 className="text-[10px] font-bold uppercase tracking-wider text-natural-text/50">채팅에 사용할 LLM</h3>
-                  <div className="grid grid-cols-2 gap-2">
+                  <div className="grid grid-cols-3 gap-2">
                     <button
                       type="button"
                       onClick={() => {
@@ -1667,7 +1739,22 @@ ${body}`;
                       }`}
                     >
                       Cursor Proxy
-                      <span className="block text-[9px] font-normal text-natural-text/60 mt-0.5">Composer 2.5 등</span>
+                      <span className="block text-[9px] font-normal text-natural-text/60 mt-0.5">Composer 2.5</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModelSettings((prev) => ({ ...prev, activeProvider: 'cline-pass' }));
+                        setSettingsTab('cline-pass');
+                      }}
+                      className={`px-3 py-2 rounded-lg border text-left text-[10px] font-semibold transition-all cursor-pointer ${
+                        modelSettings.activeProvider === 'cline-pass'
+                          ? 'border-natural-accent ring-1 ring-natural-accent bg-natural-accent/5 text-natural-title'
+                          : 'border-natural-border hover:border-natural-text/40 text-natural-text'
+                      }`}
+                    >
+                      Cline Pass
+                      <span className="block text-[9px] font-normal text-natural-text/60 mt-0.5">Qwen3.7 Plus (OAuth)</span>
                     </button>
                   </div>
                 </div>
@@ -1696,10 +1783,22 @@ ${body}`;
                   >
                     Cursor Proxy
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => setSettingsTab('cline-pass')}
+                    className={`flex-1 px-3 py-1.5 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
+                      settingsTab === 'cline-pass'
+                        ? 'bg-natural-card text-natural-title shadow-sm'
+                        : 'text-natural-text/60 hover:text-natural-title'
+                    }`}
+                  >
+                    Cline Pass
+                  </button>
                 </div>
 
                 {settingsTab === 'gemini' ? (
                   <>
+                {/* ===== Gemini 패널 ===== */}
                 {/* API Key Form */}
                 <div className="bg-natural-bg border border-natural-border p-3.5 rounded-xl flex flex-col gap-2">
                   <div className="flex items-center gap-1.5">
@@ -1827,8 +1926,9 @@ ${body}`;
                   })}
                 </div>
                   </>
-                ) : (
+                ) : settingsTab === 'cursor-proxy' ? (
                   <>
+                {/* ===== Cursor Proxy 패널 ===== */}
                 <div className="bg-natural-bg border border-natural-border p-3.5 rounded-xl flex flex-col gap-2">
                   <div className="flex items-center gap-1.5">
                     <Plug className="w-3.5 h-3.5 text-violet-600" />
@@ -1941,6 +2041,185 @@ ${body}`;
                             <span className="text-[11px] font-bold text-natural-title truncate">
                               {isComposer ? 'Composer 2.5 (권장)' : model.name}
                             </span>
+                          </div>
+                          <span className="text-[9px] text-natural-text/60 font-mono font-semibold shrink-0">
+                            이번 세션 {model.used || 0}회
+                          </span>
+                        </div>
+                        <p className="text-[9px] text-natural-text/50 font-mono truncate">API: {model.id}</p>
+                        {model.description && (
+                          <p className="text-[10px] text-natural-text/75 leading-normal line-clamp-2">{model.description}</p>
+                        )}
+                        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[9px] font-mono text-natural-text/60 bg-natural-sidebar/40 px-2.5 py-1 rounded-lg border border-natural-border/30">
+                          <span>📥 <b>컨텍스트:</b> {(model.inputTokenLimit || 0).toLocaleString()} tokens</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+                  </>
+                ) : (
+                  <>
+                {/* ===== Cline Pass 패널 ===== */}
+                <div className="bg-natural-bg border border-natural-border p-3.5 rounded-xl flex flex-col gap-2">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-xs">🔐</span>
+                    <h3 className="text-xs font-bold text-natural-title">Cline Pass OAuth 인증</h3>
+                  </div>
+                  <p className="text-[9.5px] text-natural-text/70 leading-normal">
+                    Cline(cline.bot) 계정으로 OAuth 로그인하여 구독 모델(Qwen3.7 Plus 등)을 사용합니다. API 키 대신 Google 로그인 토큰을 사용하며, 추론은 xhigh 로 설정됩니다.
+                  </p>
+                  <label className="text-[10px] font-semibold text-natural-text/60">Base URL</label>
+                  <input
+                    type="text"
+                    value={modelSettings.clinePass.baseUrl}
+                    onChange={(e) =>
+                      setModelSettings((prev) => ({
+                        ...prev,
+                        clinePass: { ...prev.clinePass, baseUrl: e.target.value },
+                      }))
+                    }
+                    placeholder="https://api.cline.bot"
+                    className="w-full bg-natural-card border border-natural-border rounded-xl px-3 py-1.5 text-xs text-natural-title font-mono focus:outline-none focus:ring-1 focus:ring-natural-accent"
+                  />
+                  <div className="flex items-center gap-2 mt-2">
+                    <span className={`text-[10px] font-semibold ${modelSettings.clinePass.isAuthenticated ? 'text-emerald-600' : 'text-amber-600'}`}>
+                      {modelSettings.clinePass.isAuthenticated ? '✅ 인증됨' : '⚠️ 미인증'}
+                    </span>
+                    {modelSettings.clinePass.isAuthenticated && modelSettings.clinePass.tokenExpiresAt > 0 && (
+                      <span className="text-[9px] text-natural-text/50 font-mono">
+                        만료: {new Date(modelSettings.clinePass.tokenExpiresAt).toLocaleString('ko-KR')}
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex gap-1.5 mt-1">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const callbackUrl = `${window.location.origin}/api/cline-pass/auth/callback`;
+                        try {
+                          const res = await fetch('/api/cline-pass/auth/start', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ callbackUrl }),
+                          });
+                          if (res.ok) {
+                            const data = await res.json();
+                            if (data.authUrl) {
+                              window.open(data.authUrl, '_blank', 'width=600,height=700');
+                            }
+                          } else {
+                            const err = await res.json().catch(() => ({}));
+                            alert(err.error || '인증 URL 생성 실패');
+                          }
+                        } catch (err: any) {
+                          alert('인증 시작 실패: ' + (err.message || '알 수 없는 오류'));
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-natural-accent hover:bg-natural-accent-hover text-white text-[10px] font-bold rounded-lg cursor-pointer shadow-sm transition-all"
+                    >
+                      Cline으로 로그인
+                    </button>
+                    {modelSettings.clinePass.isAuthenticated && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await fetch('/api/cline-pass/auth/logout', { method: 'POST' });
+                            setModelSettings((prev) => ({
+                              ...prev,
+                              clinePass: { ...prev.clinePass, isAuthenticated: false, tokenExpiresAt: 0 },
+                            }));
+                          } catch (err) {
+                            alert('로그아웃 실패');
+                          }
+                        }}
+                        className="px-3 py-1.5 border border-natural-border hover:bg-natural-hover text-natural-text text-[10px] font-semibold rounded-lg cursor-pointer"
+                      >
+                        로그아웃
+                      </button>
+                    )}
+                  </div>
+                  <div className="mt-2">
+                    <label className="text-[10px] font-semibold text-natural-text/60 block mb-1">
+                      수동 토큰 입력 (선택사항 — OAuth 콜백이 안 될 때)
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="refreshToken 또는 idToken 붙여넣기"
+                      className="w-full bg-natural-card border border-natural-border rounded-xl px-3 py-1.5 text-[10px] text-natural-title font-mono focus:outline-none focus:ring-1 focus:ring-natural-accent"
+                      onKeyDown={async (e) => {
+                        if (e.key === 'Enter') {
+                          const token = (e.target as HTMLInputElement).value.trim();
+                          if (!token) return;
+                          try {
+                            const res = await fetch('/api/cline-pass/auth/callback', {
+                              method: 'POST',
+                              headers: { 'Content-Type': 'application/json' },
+                              body: JSON.stringify({ refreshToken: token }),
+                            });
+                            if (res.ok) {
+                              const data = await res.json();
+                              setModelSettings((prev) => ({
+                                ...prev,
+                                clinePass: {
+                                  ...prev.clinePass,
+                                  isAuthenticated: true,
+                                  tokenExpiresAt: data.tokenExpiresAt || 0,
+                                },
+                              }));
+                              (e.target as HTMLInputElement).value = '';
+                              alert('Cline Pass 인증이 완료되었습니다.');
+                            } else {
+                              const err = await res.json().catch(() => ({}));
+                              alert(err.error || '토큰 저장 실패');
+                            }
+                          } catch (err) {
+                            alert('토큰 전송 실패');
+                          }
+                        }
+                      }}
+                    />
+                    <p className="text-[9px] text-natural-text/50 mt-1">Enter를 눌러 저장</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2.5">
+                  <h3 className="text-[9.5px] font-bold uppercase tracking-wider text-natural-text/50 font-mono">
+                    Cline Pass 모델 (GLM-5.2)
+                  </h3>
+                  {modelSettings.clinePass.models.length === 0 && (
+                    <p className="text-[10px] text-natural-text/60 text-center py-4">
+                      인증 완료 후 사용 가능한 모델이 표시됩니다.
+                    </p>
+                  )}
+                  {modelSettings.clinePass.models.map((model) => {
+                    const isSelected = modelSettings.clinePass.selectedModelId === model.id;
+                    return (
+                      <div
+                        key={model.id}
+                        onClick={() =>
+                          setModelSettings((prev) => ({
+                            ...prev,
+                            clinePass: { ...prev.clinePass, selectedModelId: model.id },
+                          }))
+                        }
+                        className={`border p-3 rounded-xl transition-all cursor-pointer flex flex-col gap-1.5 bg-natural-bg/30 ${
+                          isSelected
+                            ? 'border-natural-accent ring-1 ring-natural-accent bg-natural-accent/5'
+                            : 'border-natural-border hover:border-natural-text/40'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between gap-2 min-w-0">
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <input
+                              type="radio"
+                              name="clinePassSelectedModel"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              className="text-natural-accent focus:ring-natural-accent shrink-0"
+                            />
+                            <span className="text-[11px] font-bold text-natural-title truncate">{model.name}</span>
                           </div>
                           <span className="text-[9px] text-natural-text/60 font-mono font-semibold shrink-0">
                             이번 세션 {model.used || 0}회

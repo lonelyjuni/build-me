@@ -37,7 +37,7 @@ export interface ModelConfig {
 }
 
 export interface ModelSettings {
-  activeProvider: 'gemini' | 'cursor-proxy';
+  activeProvider: 'gemini' | 'cursor-proxy' | 'cline-pass';
   selectedModelId: string;
   routingEnabled: boolean;
   models: ModelConfig[];
@@ -45,6 +45,13 @@ export interface ModelSettings {
     baseUrl: string;
     selectedModelId: string;
     models: ModelConfig[];
+  };
+  clinePass: {
+    baseUrl: string;
+    selectedModelId: string;
+    models: ModelConfig[];
+    isAuthenticated: boolean;
+    tokenExpiresAt: number;
   };
 }
 
